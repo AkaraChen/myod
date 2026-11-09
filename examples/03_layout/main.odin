@@ -27,6 +27,7 @@ SIDEBAR_W :: 240
 INFO_W :: 280
 
 Example :: struct {
+	app:  ^demo.App,
 	core: core.Context,
 	ids: struct {
 		shell, sidebar, main, info: ui.Id,
@@ -100,12 +101,13 @@ last_child_id :: proc() -> ui.Id {
 
 draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32, view_size: [2]f32, data: rawptr) {
 	ex := (^Example)(data)
-	core.frame(&ex.core, view, ex, view_size, scale, t, l)
+	core.frame(&ex.core, view, ex, view_size, scale, t, l, scroll = ex.app.scroll)
 }
 
 main :: proc() {
 	app: demo.App
 	ex := new(Example)
+	ex.app = &app
 	demo.open(&app, "myod · 03_layout", PAGE, draw_page, ex)
 	defer demo.close(&app)
 	if !core.init(&ex.core, &app.text) {
@@ -113,6 +115,7 @@ main :: proc() {
 	}
 	defer core.destroy(&ex.core)
 	app.ui = &ex.core
+	app.scrollable = true
 	if slice.contains(os.args, "--selftest") {
 		os.exit(0 if selftest(&app, ex) else 1)
 	}

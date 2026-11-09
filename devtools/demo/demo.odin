@@ -103,7 +103,12 @@ run :: proc(app: ^App) {
 			}
 		case .Wheel:
 			if app.scrollable {
-				app.scroll.y = max(0, app.scroll.y - e.wheel.y * 40)
+				// Trackpads report fine fractional deltas (tenths of a point on macOS: one unit is 10
+				// points); a mouse wheel reports whole notches, which get a few lines' worth each.
+				// A stand-in until scroll containers arrive in M6.
+				step: f32 = 10 if e.wheel.y != f32(int(e.wheel.y)) else 40
+				app.scroll.y -= e.wheel.y * step
+				clamp_scroll(app)
 			}
 		}
 		redraw(app)
@@ -111,9 +116,24 @@ run :: proc(app: ^App) {
 	}
 }
 
+// Keeps the scroll offset inside the page laid out last.
+@(private)
+clamp_scroll :: proc(app: ^App) {
+	limit: f32 = 0
+	if app.ui != nil {
+		view := platform.pixel_size(app.window)
+		scale := app.scale if app.scale > 0 else platform.display_scale(app.window)
+		limit = max(0, core.content_size(app.ui).y - f32(view.y) / scale)
+	}
+	app.scroll.y = clamp(app.scroll.y, 0, limit)
+}
+
 @(private)
 redraw :: proc(data: rawptr) {
 	app := (^App)(data)
+	if app.scrollable {
+		clamp_scroll(app) // the window may have grown since the last scroll
+	}
 	if backend.device_lost(app.gpu) {
 		backend.renderer_destroy(&app.renderer)
 		if !backend.recover(&app.gpu, &app.surface, app.window) {

@@ -1,6 +1,6 @@
 // M3: a card feed on a CSS grid, `repeat(auto-fill, minmax(240px, 1fr))`, with flex layout and
 // wrapping text inside each card. Each row is as tall as its tallest card (cards stretch to it), and
-// the number of cards per row follows the window width.
+// the number of cards per row follows the window width. Scroll with the wheel or trackpad.
 //
 // Flags:
 //   --selftest      at several widths and every scale: cards per row, equal card widths, equal
@@ -50,6 +50,7 @@ POSTS := [?]Post {
 }
 
 Example :: struct {
+	app:  ^demo.App,
 	core:  core.Context,
 	cards: [len(POSTS)]struct {
 		card, body, footer: ui.Id,
@@ -102,12 +103,13 @@ card :: proc(ex: ^Example, post: Post, i: int) {
 
 draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32, view_size: [2]f32, data: rawptr) {
 	ex := (^Example)(data)
-	core.frame(&ex.core, view, ex, view_size, scale, t, l)
+	core.frame(&ex.core, view, ex, view_size, scale, t, l, scroll = ex.app.scroll)
 }
 
 main :: proc() {
 	app: demo.App
 	ex := new(Example)
+	ex.app = &app
 	demo.open(&app, "myod · 03_feed", PAGE, draw_page, ex)
 	defer demo.close(&app)
 	if !core.init(&ex.core, &app.text) {
@@ -115,6 +117,7 @@ main :: proc() {
 	}
 	defer core.destroy(&ex.core)
 	app.ui = &ex.core
+	app.scrollable = true
 	if slice.contains(os.args, "--selftest") {
 		os.exit(0 if selftest(&app, ex) else 1)
 	}

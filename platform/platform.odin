@@ -33,7 +33,9 @@ Event :: struct {
 	kind:  Event_Kind,
 	// For Key_Down: the key code. Letters are lowercase ASCII, digits are ASCII digits.
 	key:   rune,
-	// For Wheel: the scroll amount, positive away from the user (up) and to the right.
+	// For Wheel: the scroll amount as SDL reports it, positive up and to the right, with the system's
+	// scroll direction setting (e.g. macOS natural scrolling) already applied. On macOS, trackpad
+	// deltas are in tenths of a point; a mouse wheel notch is about 1.
 	wheel: [2]f32,
 }
 
@@ -110,11 +112,9 @@ translate :: proc(e: sdl.Event) -> Event {
 			return {kind = .Key_Down, key = rune(e.key.key)}
 		}
 	case .MOUSE_WHEEL:
-		w := [2]f32{e.wheel.x, e.wheel.y}
-		if e.wheel.direction == .FLIPPED {
-			w = -w
-		}
-		return {kind = .Wheel, wheel = w}
+		// No correction for `direction`: SDL's FLIPPED means the values already follow the user's
+		// natural-scrolling setting, which is what content should follow.
+		return {kind = .Wheel, wheel = {e.wheel.x, e.wheel.y}}
 	}
 	return {kind = .Other}
 }

@@ -389,6 +389,15 @@ measured :: proc(ctx: ^Context, id: Id) -> [2]f32 {
 	return size
 }
 
+// The size of the whole page laid out in the last pass (the root), in logical pixels.
+content_size :: proc(ctx: ^Context) -> [2]f32 {
+	t := &ctx.trees[ctx.cur]
+	if len(t.nodes) == 0 {
+		return {}
+	}
+	return {t.nodes[0].rect.w, t.nodes[0].rect.h}
+}
+
 // The last laid-out rect of a node (absolute, logical pixels), without recording a read.
 last_rect :: proc(ctx: ^Context, id: Id) -> (Rect, bool) {
 	slot, ok := ctx.slot_of[id]
