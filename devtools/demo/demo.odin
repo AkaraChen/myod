@@ -81,8 +81,12 @@ close :: proc(app: ^App) {
 run :: proc(app: ^App) {
 	platform.set_redraw(app.window, redraw, app)
 	redraw(app)
+	debug_input := devtools.flags().input
 	for {
 		e := platform.poll_event() if app.continuous else platform.wait_event()
+		if e.kind != .None && e.kind != .Other && debug_input {
+			fmt.eprintln("input:", e)
+		}
 		#partial switch e.kind {
 		case .Quit:
 			return
@@ -103,11 +107,10 @@ run :: proc(app: ^App) {
 			}
 		case .Wheel:
 			if app.scrollable {
-				// Trackpads report fine fractional deltas (tenths of a point on macOS: one unit is 10
-				// points); a mouse wheel reports whole notches, which get a few lines' worth each.
+				// Trackpads report points; a mouse wheel reports notches, which get a few lines each.
 				// A stand-in until scroll containers arrive in M6.
-				step: f32 = 10 if e.wheel.y != f32(int(e.wheel.y)) else 40
-				app.scroll.y -= e.wheel.y * step
+				step: f32 = 1 if e.wheel.precise else 40
+				app.scroll.y -= e.wheel.delta.y * step
 				clamp_scroll(app)
 			}
 		}

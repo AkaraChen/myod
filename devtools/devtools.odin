@@ -5,6 +5,7 @@
 //                         widgets declared, containers culled, subtrees reused, layout work and the
 //                         time per stage
 //   MYOD_DEBUG_ATLAS=1    every atlas page, scaled down, along the bottom-left
+//   MYOD_DEBUG_INPUT=1    input events printed to stderr as they arrive
 //
 // Apps append the overlays to their command list after the page, so they draw on top.
 package devtools
@@ -23,6 +24,7 @@ import "../theme"
 Flags :: struct {
 	render: bool,
 	atlas:  bool,
+	input:  bool,
 }
 
 // Reads the MYOD_DEBUG_* environment variables.
@@ -31,7 +33,7 @@ flags :: proc() -> Flags {
 		v := os.get_env(name, context.temp_allocator)
 		return v != "" && v != "0"
 	}
-	return {render = on("MYOD_DEBUG_RENDER"), atlas = on("MYOD_DEBUG_ATLAS")}
+	return {render = on("MYOD_DEBUG_RENDER"), atlas = on("MYOD_DEBUG_ATLAS"), input = on("MYOD_DEBUG_INPUT")}
 }
 
 // Draws the render stats panel in the top-right corner of a `view` (logical size). `frame` adds the

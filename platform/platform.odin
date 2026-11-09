@@ -33,11 +33,41 @@ Event :: struct {
 	kind:  Event_Kind,
 	// For Key_Down: the key code. Letters are lowercase ASCII, digits are ASCII digits.
 	key:   rune,
-	// For Wheel: the scroll amount as SDL reports it, positive up and to the right, with the system's
-	// scroll direction setting (e.g. macOS natural scrolling) already applied. On macOS, trackpad
-	// deltas are in tenths of a point; a mouse wheel notch is about 1.
-	wheel: [2]f32,
+	// For Wheel: see Wheel_Info.
+	wheel: Wheel_Info,
 }
+
+// A scroll, with the system's scroll direction setting (e.g. macOS natural scrolling) applied.
+Wheel_Info :: struct {
+	// Positive moves the content down and to the right, i.e. reveals what is above and to the left.
+	// In logical pixels when `precise` (trackpads, Magic Mouse), otherwise in wheel notches.
+	delta:   [2]f32,
+	precise: bool,
+	// The gesture this event belongs to, where the system reports it (macOS). Momentum events
+	// continue a flick after the fingers lift; apps that do their own inertia can ignore them.
+	phase:   Wheel_Phase,
+}
+
+Wheel_Phase :: enum u8 {
+	None, // unknown (a mouse wheel, or a platform that does not say)
+	Began,
+	Changed,
+	Ended,
+	Cancelled,
+	Momentum,
+	Momentum_Ended,
+}
+
+// Wheel details read from the native event while SDL dispatches it, matched up by timestamp when
+// the event is dequeued.
+@(private)
+g_wheels: [16]struct {
+	timestamp: u64,
+	info:      Wheel_Info,
+}
+
+@(private)
+g_wheel_next: int
 
 @(private)
 g_context: runtime.Context
@@ -112,9 +142,15 @@ translate :: proc(e: sdl.Event) -> Event {
 			return {kind = .Key_Down, key = rune(e.key.key)}
 		}
 	case .MOUSE_WHEEL:
+		for w in g_wheels {
+			if w.timestamp == e.wheel.timestamp {
+				return {kind = .Wheel, wheel = w.info}
+			}
+		}
 		// No correction for `direction`: SDL's FLIPPED means the values already follow the user's
-		// natural-scrolling setting, which is what content should follow.
-		return {kind = .Wheel, wheel = {e.wheel.x, e.wheel.y}}
+		// natural-scrolling setting, which is what content should follow. SDL's x is positive to
+		// the right, the opposite of Wheel_Info.
+		return {kind = .Wheel, wheel = {delta = {-e.wheel.x, e.wheel.y}}}
 	}
 	return {kind = .Other}
 }
@@ -145,6 +181,11 @@ event_watch :: proc "c" (userdata: rawptr, event: ^sdl.Event) -> bool {
 	context = g_context
 	w := (^Window)(userdata)
 	#partial switch event.type {
+	case .MOUSE_WHEEL:
+		if info, ok := native_wheel(); ok {
+			g_wheels[g_wheel_next] = {event.wheel.timestamp, info}
+			g_wheel_next = (g_wheel_next + 1) % len(g_wheels)
+		}
 	case .WINDOW_EXPOSED, .WINDOW_PIXEL_SIZE_CHANGED, .WINDOW_DISPLAY_SCALE_CHANGED:
 		if event.window.windowID == w.id && w.redraw != nil {
 			w.redraw(w.redraw_data)
