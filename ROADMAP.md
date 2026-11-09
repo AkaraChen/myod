@@ -97,7 +97,7 @@ Each milestone uses **a runnable demo** as its acceptance criterion, placed unde
 
 - [x] macOS arm64, automated (`just test`), 2026-11-09: both themes at 1x / 1.25x / 1.5x / 2x — all probes exact, no in-between colors, uniform hairlines; device loss detected and recovered
 - [x] macOS arm64, 10,000 rectangles: 60fps (capped by the 60Hz display); renderer CPU time 2.4ms per frame in a debug build, 0.9ms with `-o:speed`
-- [ ] macOS arm64, visual check of the interactive page
+- [x] macOS arm64, visual check of the interactive page (2026-11-09)
 - [ ] Linux x86_64
 
 **Reading:** wgpu instanced drawing and vertex buffer layout; WGSL basics
