@@ -40,6 +40,8 @@ test:
     odin build examples/02_icons {{odin_flags}} -out:build/02_icons
     ./build/02_icons --selftest
     odin test core {{odin_flags}} -out:build/core_test
+    odin test ui {{odin_flags}} -define:MYOD_TEXT_BACKEND=freetype -out:build/ui_test
+    odin test examples/counter {{odin_flags}} -define:MYOD_TEXT_BACKEND=freetype -out:build/counter_test
     odin build examples/03_layout {{odin_flags}} -out:build/03_layout
     ./build/03_layout --selftest
     odin build examples/03_feed {{odin_flags}} -out:build/03_feed

@@ -113,6 +113,10 @@ Node :: struct {
 	next_sibling: i32,
 	child_count:  i32,
 	flags:        Node_Flags,
+	// Semantics for the accessibility tree (a11y.odin).
+	role:         Role,
+	name:         string,
+	a11y_value:   string,
 }
 
 Slot :: struct {
@@ -172,10 +176,14 @@ Context :: struct {
 	free_slots: [dynamic]i32,
 	reads:      [dynamic]Read,
 	warned:     map[Id]bool,
+	names:      map[string]Id, // widget keys declared this pass, for focus("key")
 	layout:     layout.Ctx,
 	stats:      Stats,
 	odin:       runtime.Context, // for the measure callback
 	no_culling: bool, // for tests: lay out everything
+	a11y:       [dynamic]A11y_Node, // the semantic tree of the last pass
+	a11y_prev:  [dynamic]A11y_Node, // for MYOD_A11Y_LOG
+	a11y_log:   bool,
 	size:        [2]f32, // the window's logical size this frame
 	frame_start: time.Tick,
 	pass_start:  time.Tick,
@@ -201,6 +209,7 @@ init :: proc(ctx: ^Context, txt: ^text.Context) -> bool {
 	ctx.text = txt
 	ctx.layout = layout.create()
 	ctx.scale = 0
+	ctx.a11y_log = a11y_log_enabled()
 	return true
 }
 
@@ -224,6 +233,9 @@ destroy :: proc(ctx: ^Context) {
 	delete(ctx.free_slots)
 	delete(ctx.reads)
 	delete(ctx.warned)
+	delete(ctx.names)
+	delete(ctx.a11y)
+	a11y_prev_destroy(ctx)
 	input_destroy(&ctx.input)
 	layout.destroy(ctx.layout)
 	ctx^ = {}
@@ -292,6 +304,7 @@ pass_end :: proc(ctx: ^Context) -> bool {
 	resolve(ctx)
 	ctx.stats.layout_time += time.tick_since(t1)
 	ctx.stats.passes += 1
+	a11y_build(ctx)
 	return stable(ctx)
 }
 
@@ -305,6 +318,7 @@ frame_end :: proc(ctx: ^Context, list: ^render.Command_List, outer: ^Context) {
 		reclaim(ctx)
 	}
 	ctx.stats.frame_time = time.tick_since(ctx.frame_start)
+	a11y_log_frame(ctx)
 	current_ctx = outer
 }
 
@@ -374,6 +388,19 @@ key_id_int :: proc(ctx: ^Context, key: int) -> Id {
 	return Id(mix(mix(u64(scope(ctx)), 0x696e74), u64(key)))
 }
 
+// Remembers a widget's globally unique name for this pass, so an effect can focus it.
+register_name :: proc(ctx: ^Context, name: string, id: Id) {
+	if name != "" {
+		ctx.names[name] = id
+	}
+}
+
+// The ID that declared `name` in the last pass, if any.
+name_id :: proc(ctx: ^Context, name: string) -> (Id, bool) {
+	id, ok := ctx.names[name]
+	return id, ok
+}
+
 // An ID for an unnamed node: its position among its parent's children.
 auto_id :: proc(ctx: ^Context) -> Id {
 	t := &ctx.trees[ctx.cur]
@@ -407,6 +434,7 @@ open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid
 	if clip {
 		n.flags += {.Clip}
 	}
+	a11y_declare(n, label)
 	append(&ctx.stack, index)
 	append(&ctx.scopes, n.id)
 	s := &ctx.slots[n.slot]
@@ -448,6 +476,7 @@ leaf :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, meas
 	s.measure = 1 if measured else 0
 	index := add_node(ctx, id, s, paint, {}, label)
 	ctx.trees[ctx.cur].nodes[index].flags = flags
+	a11y_declare(&ctx.trees[ctx.cur].nodes[index], label)
 	finish(ctx, index)
 	return index
 }
@@ -624,6 +653,7 @@ begin_pass :: proc(ctx: ^Context, size: [2]f32) {
 	clear(&ctx.stack)
 	clear(&ctx.scopes)
 	clear(&ctx.reads)
+	clear(&ctx.names)
 	ctx.stats.declared, ctx.stats.culled, ctx.stats.reused, ctx.stats.reused_roots = 0, 0, 0, 0
 
 	// The root: the window's width, and at least its height, so content can grow to fill it.
