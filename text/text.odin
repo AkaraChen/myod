@@ -396,7 +396,13 @@ wrap :: proc(ctx: ^Context, s: string, style: Style, max_width: f32, scale: f32,
 			last_break = candidate
 		}
 	}
+	// libunibreak marks the end of the text LINEBREAK_INDETERMINATE, so the last line is checked here.
 	if start < len(s) {
+		width := x_at[trim_trailing_space(s, start, len(s))] - x_at[start]
+		if width > limit && last_break > start {
+			emit(&lines, s, x_at, start, last_break)
+			start = last_break
+		}
 		emit(&lines, s, x_at, start, len(s))
 	}
 	return lines[:]

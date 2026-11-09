@@ -39,6 +39,23 @@ test:
     ./build/02_sprites --selftest
     odin build examples/02_icons {{odin_flags}} -out:build/02_icons
     ./build/02_icons --selftest
+    odin test core {{odin_flags}} -out:build/core_test
+    odin build examples/03_layout {{odin_flags}} -out:build/03_layout
+    ./build/03_layout --selftest
+    odin build examples/03_feed {{odin_flags}} -out:build/03_feed
+    ./build/03_feed --selftest
+    odin build examples/03_long_form {{odin_flags}} -out:build/03_long_form
+    ./build/03_long_form --selftest
+
+# Unit tests of the Rust wrapper (needs a Rust toolchain; users never do)
+test-ffi:
+    cd ffi && cargo test --release
+
+# The M3 performance benchmark, optimized build
+bench:
+    mkdir -p build
+    odin build examples/03_long_form {{odin_flags}} -o:speed -out:build/03_long_form_speed
+    ./build/03_long_form_speed --bench
 
 # Type-check every example
 check:
@@ -71,7 +88,7 @@ verify:
 
 # Force a rebuild to confirm the build itself is deterministic
 verify-rebuild:
-    cd third_party && {{nix}} build .#sdl3 .#zlib .#libpng .#freetype .#harfbuzz .#text-shim .#libunibreak --rebuild
+    cd third_party && {{nix}} build .#sdl3 .#zlib .#libpng .#freetype .#harfbuzz .#text-shim .#libunibreak .#ffi --rebuild
 
 # Re-sync the SDL3 and wgpu bindings from Odin's vendor directory
 bindings:

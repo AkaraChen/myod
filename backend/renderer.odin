@@ -273,12 +273,17 @@ sync_atlases :: proc(gpu: Gpu, r: ^Renderer, atlases: ^[atlas.Kind]atlas.Atlas) 
 renderer_destroy :: proc(r: ^Renderer) {
 	delete(r.instances)
 	delete(r.batches)
-	wgpu.BindGroupRelease(r.bind_group)
+	// The bind group and atlas textures only exist once something was drawn.
+	if r.bind_group != nil {
+		wgpu.BindGroupRelease(r.bind_group)
+	}
 	wgpu.BindGroupLayoutRelease(r.layout)
 	wgpu.SamplerRelease(r.sampler)
 	for &t in r.textures {
-		wgpu.TextureViewRelease(t.view)
-		wgpu.TextureRelease(t.texture)
+		if t.texture != nil {
+			wgpu.TextureViewRelease(t.view)
+			wgpu.TextureRelease(t.texture)
+		}
 	}
 	for &a in r.fallback {
 		atlas.destroy(&a)

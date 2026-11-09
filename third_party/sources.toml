@@ -84,3 +84,10 @@ build = "upstream-release"
 # Copied into third_party/phosphor/<weight>/. The hash is of the unpacked tree. MIT license.
 url = "https://github.com/phosphor-icons/core/archive/refs/tags/v2.0.8.tar.gz"
 hash = "sha256-ayUXzJmMg8xw9IZ1QGVWcp/FpHktDZmqKGnVLORa88Y="
+
+[taffy]
+version = "0.15.1"
+build = "source"
+# A Rust crate, pinned with its checksum in ffi/Cargo.lock (Nix vendors it from there); listed here
+# for reference. Built into libmyod_ffi.a together with myod's wrapper (ffi/). MIT license.
+url = "https://crates.io/api/v1/crates/taffy/0.15.1/download"

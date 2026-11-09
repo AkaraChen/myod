@@ -28,7 +28,7 @@ myod's technology choices, API design, build, rendering and testing. For visual 
 | App architecture | Elm architecture: State / Msg / update / view, driven by the library-provided `ui.Store` | See "API design" |
 | Widget API | Controlled widgets, all returning `Response`; containers close automatically via `@(deferred_out)` | See "API design" |
 | Theme | Tokens only: one `Theme` struct that is replaced as a whole | No per-widget style overrides before 1.0 |
-| Layout | [Taffy](https://github.com/dioxuslabs/taffy) (Rust): one engine implements Flexbox, CSS Grid and Block | The official C binding is not finished yet. We write our own very thin Rust wrapper that exports a C ABI and compile it into a static library per platform; building it needs a Rust toolchain. Not Clay: it only has flex, and flex and grid must nest and measure each other within the same engine |
+| Layout | [Taffy](https://github.com/dioxuslabs/taffy) (Rust): one engine implements Flexbox, CSS Grid and Block | The official C binding is not finished yet. Our own thin Rust wrapper (`ffi/`) runs Taffy's low-level tree traits directly on myod's node array and exports a C ABI; it is compiled into a static library per platform (building it needs a Rust toolchain, using it does not). Not Clay: it only has flex, and flex and grid must nest and measure each other within the same engine |
 | Charts | Build nanosvg shape structures directly in code, then rasterize them into a separate texture | No SVG string concatenation; text is drawn separately by the text system; no animation for now |
 
 **Text backends** (matching Ghostty's default backend on each platform):
@@ -110,7 +110,7 @@ A frame is split into several phases. **`view` itself is purely declarative**:
 4. view:          next_frame returns true and the app calls view. Widgets only read the results recorded in step 2 as their Response;
                   they handle no input and modify nothing, and only declare nodes and what to draw
 5. Layout:        on the next call to next_frame, Taffy computes layout, then popup positioning runs
-6. Check:         a. layout differs from what view read in step 4 → this pass counts as a ghost pass: drop the messages it sent and go back to step 4
+6. Check:         a. layout differs from what view read in step 4, or moved a culled container into view → this pass counts as a ghost pass: drop the messages it sent and go back to step 4
                   b. view sent messages → go back to step 3 to process them, then rerun view
                   Neither case presents the frame; view runs at most 3 times per frame; if still unstable, present the last pass and log a warning in debug mode
 7. Present:       generate draw commands from the final layout and present the frame; free the message arena, clear context.temp_allocator; go back to step 1
@@ -302,6 +302,9 @@ In immediate mode, the per-frame cost depends only on the **number of visible wi
 - **Popups are positioned in the same frame**: a popup declares "anchored to node X" in the layout. After the main layout, a positioning phase runs: it takes the anchor's position in the current frame and the popup's own size, and decides whether to flip to the other side and whether to shift to stay inside the window edge. Popups do not lag a frame behind when the window resizes
 - **Logic that depends on layout results** (responsive switching, the visible height of a virtual list): read sizes with `ui.size_of(id)`; if what was read differs from the final layout, rerun as a ghost pass per item 2
 - **Scrollbars take no layout width**: they overlay the content, so content width does not depend on whether a scrollbar is present. This avoids the oscillation "scrollbar appears → content gets narrower → scrollbar no longer needed"
+- **The root** is as wide as the window and at least as tall, so `height = ui.grow()` fills the window while longer content extends below it
+- **Text measures to whole physical pixels**, so rounding the laid-out rect never makes it narrower than the text it was measured for
+- **Hairlines keep their own thickness**: a divider is drawn from its logical thickness (1px), not from its rounded rect, so every divider has the same physical thickness wherever it lands
 - **Taffy handles the circular dependency of text wrapping**: the measure callback only has to answer "given this available width, how big is this text"
 
 ### 14. Layers and input routing
@@ -425,45 +428,40 @@ if ui.dialog(d, Cancel_Delete{}, open = s.pending_delete != 0, title = "删除�
 
 Immediate mode's performance cliff is not that `view` reruns; it is that **every event redoes everything at the size of the whole UI**: every declared widget, plus all of its downstream work (layout, text, draw commands, semantic tree). Asking users to annotate what can be skipped (React's `memo`, Elm's `Html.lazy`) only moves the burden onto whoever writes the code. myod attacks the cliff structurally instead, with no user annotations.
 
-### One resolved tree, double-buffered
+### One node array per pass, one slot per ID
 
-Each window keeps a single **resolved tree**. Every node is one record holding everything about it: the declared parameters, the layout result, the text layout, the draw commands and the semantic information. There are no separate per-ID tables for the layout cache, the semantic tree, the previous layout and the previous draw commands.
+`view` declares into a **flat, pre-order node array** (`core/`): one record per node with its ID, its content hash, its style as Taffy reads it, and what it draws. The arrays are double-buffered: the previous pass's array stays readable while the next one is built.
 
-```
-previous frame's resolved tree ─┐
-                                ├─→ this frame's resolved tree
-this frame's declared tree ─────┘   (subtree by subtree: copy from the previous frame when reusable, otherwise compute)
-```
+Everything that must outlive a pass lives in a **slot**, one per widget ID: the last laid-out rect, Taffy's layout cache and last layout for the node, the hash that cache belongs to, and the library's per-ID state (caret, scroll offset, …). Slots not declared for 120 frames are reclaimed.
 
-- `view` produces the **declared tree** for this frame (temporary, in a per-frame arena)
-- The resolved tree is **double-buffered**: the previous frame's tree is read-only while this frame's tree is built, then the old one is dropped as a whole
-- Matching against the previous frame happens **once per subtree root**, not once per node per table
-- Presentation state (caret, scroll offset, …) stays in its own table keyed by ID. It is not a tree and it is meant to persist across frames
-- Taffy works directly on the resolved tree's node array (see the Taffy approach validated in M3). If that approach fails and Taffy's own node tree has to be used, a real second tree comes back, along with its sync costs
+- **Taffy runs directly on the node array** (validated in M3): `ffi/` implements Taffy's low-level tree traits over the C structs Odin fills in, and keeps the cache and last layout per slot. There is no second tree to keep in sync
+- Styles are read in place through views that implement Taffy's style traits; only grid containers are converted to a `taffy::Style` (their track lists are generic iterators)
+- Matching against the previous frame is by ID, through the slot: no per-table lookups
+- Text layout and draw commands are not stored: draw commands are generated after layout for the visible nodes, from the shaping cache (measured below; storing them is not worth it yet)
 
 ### Automatic subtree reuse
 
-While a container is declared, it computes a **content hash** from its own parameters plus the hashes of all its children (a Merkle tree). A subtree is reused when all of these hold:
+While a node is declared, it computes a **content hash** from its ID, its style and what it draws; when it closes, it folds in the hashes of all its children (a Merkle tree). Before layout, every node whose hash differs from the one its slot's layout cache was built for gets its cache cleared. That is exactly Taffy's "mark dirty up to the root": a change anywhere changes the hashes of all its ancestors and nothing else.
 
-- **Same root ID and same content hash** as in the previous frame: nothing declared inside it changed. This includes the presentation state that affects drawing (hover, pressed, focus)
-- **Same constraints from the parent**, e.g. the same available width. Unchanged content under a narrower parent still needs a new layout
-- **Positions are stored relative to the subtree's origin**: draw commands and semantic bounds are relative, so a subtree that only moved (e.g. a row was inserted above it) is reused with an offset
-
-A reused subtree is copied from the previous frame's resolved tree as is: layout, text, draw commands and semantic nodes are all skipped, and the AccessKit diff skips it too. Copying is a plain memory copy of node records (tens of bytes each, roughly 1MB and about 0.1ms for 10,000 nodes), far cheaper than recomputing.
+- **Unchanged subtrees are answered from Taffy's cache**: Taffy does not descend into them at all, and their children keep the layouts stored in their slots
+- **Constraints are part of Taffy's cache key**: unchanged content under a narrower parent is laid out again, with no extra bookkeeping
+- A subtree that only moved (a row inserted above it) keeps its cache: positions are relative to the parent, and absolute rects are recomputed in one cheap pass
+- Hover, pressed and focus will join the hash with M4, so presentation changes invalidate exactly the widgets they affect
 
 Correctness does not rely on anyone remembering dependencies: the hash covers everything that was actually declared, so if the output changes, the hash changes.
 
 ### Automatic culling
 
-Containers already return bool (`if ui.column(...) { ... }`). A container that was entirely outside the visible area in the previous frame **returns false**: the code inside does not run, and the library inserts a placeholder node with the container's previous size. Long forms, long documents and long settings pages become effectively virtualized with no API change.
+Containers already return bool (`if ui.column(...) { ... }`). A container whose last rect lies entirely outside the visible area **returns false**: the code inside does not run, and the library inserts a placeholder node with the container's previous size. Long forms, long documents and long settings pages become effectively virtualized with no API change.
 
+- The decision uses the container's previous rect against the **current** visible area, so scrolling never shows a missing container. If layout moves a placeholder into view anyway, the pass reruns as a ghost pass (API design → 2)
 - If content changes while culled, the placeholder size can be wrong; scroll anchoring (API design → 15) keeps the visible content from jumping
-- A culled subtree is copied over from the previous frame like a reused one, so the presentation state of widgets inside it (e.g. a caret position) is not collected just because they were not declared for a few frames
+- The slots inside a culled container are kept alive (their list is collected once, when culling starts), so the presentation state of widgets inside it (e.g. a caret position) is not collected just because they were not declared for a while
 - Screen readers and text selection treat culled regions like virtual lists: placeholder nodes, scrolled into view on demand
 
 ### Cheap declaration
 
-Declaring a widget does the minimum: append a record to the per-frame arena, compute its ID and hash. The target is tens to around a hundred nanoseconds per widget, so even 10,000 visible widgets declare in about 1ms.
+Declaring a widget does the minimum: append a record to the node array, compute its ID and hash, find its slot. The target is tens to around a hundred nanoseconds per widget, so even 10,000 visible widgets declare in about 1ms. Measured (M3, M3 MacBook Air, optimized build): about 95 ns per text widget.
 
 ### Resulting cost model
 
@@ -477,8 +475,8 @@ A compile-time approach (compiling `view` into create and fine-grained update co
 
 ### Measuring it
 
-- The debug overlay (`MYOD_DEBUG_RENDER=1`) shows, per frame: widgets declared, containers culled, subtrees reused, and time spent in `view`, layout, text and draw generation
-- A performance benchmark is part of the M3 acceptance (with real typing in M7)
+- The debug overlay (`MYOD_DEBUG_RENDER=1`) shows, per frame: widgets declared, containers culled, widgets whose layout was reused, nodes Taffy laid out, measure calls, passes, and time spent in `view`, layout and draw generation
+- `just bench` runs the M3 benchmark (`examples/03_long_form`): a 5,885-widget settings form, one field changing every frame. Optimized build on an M3 MacBook Air: 0.08 ms per frame on average (view 0.02, layout 0.05, draw commands 0.01), 0.11 ms at p99; about 180 widgets declared, 120 containers culled, 7 nodes laid out per frame. Real typing joins in M7
 
 ---
 
@@ -504,7 +502,7 @@ third_party/
 | Dependency | Approach | Reason |
 | --- | --- | --- |
 | HarfBuzz, FreeType, nanosvg, libunibreak | Prebuilt static libraries, committed to the repo | |
-| Taffy Rust wrapper | Prebuilt static library, committed to the repo | Built with `panic = "abort"`, `opt-level = "s"`, LTO and strip to keep the size down |
+| Taffy Rust wrapper (`ffi/`) | Prebuilt static library, committed to the repo | Built with `panic = "abort"`, `opt-level = "s"`, LTO and stripped debug info. wgpu-native carries its own copy of the Rust standard library, so the archive is pre-linked into one object (`ld -r`) that exports only the functions in `ffi/exports.txt`; everything else becomes local and cannot clash |
 | AccessKit | Prebuilt static library, committed to the repo | Goes into the same Rust static library as the Taffy wrapper, so only one copy of the Rust standard library is included |
 | SDL3 | Built from source into a static library, committed to the repo | Only the subsystems the UI needs (video, events, etc.) are enabled; audio, gamepad, SDL's own render API and so on are turned off |
 | wgpu-native | For now, upstream's prebuilt static library release, hash-pinned and committed to the repo | Odin's `vendor:wgpu` only ships the Windows library; for macOS and Linux we have to supply our own. Will switch to building from source later |
@@ -597,6 +595,11 @@ The M2 examples follow the same pattern (`devtools/demo` holds the shared window
 - `02_text`: the 2:1 grid at every scale and size, wrapping, uppercasing and letter spacing, features and variation axes, fallback, color emoji, unbroken underlines, and identical rendering after atlas pages were evicted (with a tiny 256² atlas). Runs on both text backends
 - `02_sprites`: grids of ┼ have unbroken lines across cells and line boxes at every scale
 - `02_icons`: every Phosphor weight at 12 / 16 / 20 / 24px draws inside its box, duotone shows both colors, inline icons stay inside the line box
+- `03_layout`: the app shell's panel and divider rects at three window sizes and four scales; dividers are equally thick hairlines running the full height
+- `03_feed`: `repeat(auto-fill, minmax(240px, 1fr))` gives the right number of columns at five widths; rows are as tall as their tallest card; text stays inside its card
+- `03_long_form`: off-screen sections are culled, unchanged subtrees come from the layout cache, and culling moves nothing (visible sections land where they would with culling off)
+- `odin test core`: IDs (stable, scoped, `"Label##id"`), duplicate IDs, per-ID state and its reclamation, ghost passes after a changed `size_of`, subtree reuse, culled containers keeping their slots alive
+- `just test-ffi` (needs Rust): the Taffy wrapper's own tests
 
 
 Modeled on React Testing Library: **test the way users actually use the app**. The ghost rendering pipeline is itself a test environment that needs no window: input, messages, view and layout need no GPU; only the final present does.
@@ -621,15 +624,19 @@ testing.expect(tt, ui.test_find(&t, role = .Checkbox, name = "买牛奶") != nil
 
 ```
 platform/  windows, events, DPI, system theme (built on SDL3); calls the redraw callback directly while a window edge is dragged
-core/      widget IDs, input state, per-ID persistent state storage, frame loop, layers
+core/      the declaration layer and frame tree: widget IDs, slots (per-ID state, layout cache, last rect),
+           Merkle hashes, culling, ghost passes, layout, draw command generation; later input state, layers
 atlas/     two atlases: R8 (glyphs, icons) and RGBA (emoji, multicolor SVG); packing, paging, whole-page eviction
 text/      font loading, measurement, line wrapping, glyph and icon rasterization into the atlases (both layout and rendering depend on it);
            backend_coretext.odin and backend_freetype.odin (FreeType + HarfBuzz, with Fontconfig on Linux), picked at compile time
 sprite/    sprite glyphs: box drawing, blocks, braille, Powerline, Spinner
 icons/     the Icon type (an SVG per weight); icons/phosphor is the generated Phosphor name table, embedding SVGs with #load
 devtools/  debug overlays (MYOD_DEBUG_RENDER, MYOD_DEBUG_ATLAS); devtools/demo is the shared scaffolding of the examples
-layout/    Odin binding for Taffy; fills a flat node array each frame and reads back the layout results
-ffi/taffy/ Rust wrapper: implements Taffy's layout tree traits on the node array passed from Odin, exports a C ABI
+layout/    Odin binding for ffi/: the C structs and functions of the Taffy wrapper
+ffi/       Rust wrapper (one crate, later also AccessKit): implements Taffy's layout tree traits on the
+           node array passed from Odin, exports a C ABI
+ui/        the public API: containers and layout options (layout.odin), display widgets (widgets.odin),
+           and the draft of what later milestones implement (draft.odin)
 render/    Draw_Command definitions, plain data, no dependency on any GPU code
 backend/   wgpu implementation: consumes Draw_Command and submits to the GPU
 widgets/   official component library (aligned with the shadcn/ui component set)
@@ -641,5 +648,5 @@ tools/     developer scripts (rgba2png.py for --dump captures)
 examples/  one runnable demo per milestone, plus three API examples: counter, todomvc, download
 ```
 
-Dependency direction: `widgets → core → layout → text`, `layout → ffi/taffy`, `chart → nanosvg (third_party/shim)`, `text → atlas`, `icons/phosphor → icons`, `text → icons + sprite`, `core → render`, `backend → render + atlas`.
+Dependency direction: `ui → core → layout + text`, `layout → ffi`, `chart → nanosvg (third_party/shim)`, `text → atlas`, `icons/phosphor → icons`, `text → icons + sprite`, `core → render`, `backend → render + atlas`.
 `render/` must not depend on `backend/`.

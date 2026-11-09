@@ -234,6 +234,15 @@ check_wrapping_and_spacing :: proc(app: ^demo.App) -> bool {
 			ok = false
 		}
 
+		// The last line is held to the width too (libunibreak leaves the end of the text undecided).
+		tail := "over budget grows the atlas instead."
+		for l in text.wrap(ctx, tail, body, 200, scale) {
+			if l.width > 200 * scale {
+				fmt.eprintfln("FAIL %.2fx wrap: last line %q is %v px, wider than %v", scale, tail[l.start:l.end], l.width, 200 * scale)
+				ok = false
+			}
+		}
+
 		// Chinese: any two characters may break, so 20 characters in 7.5 cells give lines of 7, 7, 6.
 		chinese := "零一二三四五六七八九零一二三四五六七八九"
 		cjk_lines := text.wrap(ctx, chinese, body, 7.5 * phys / scale, scale)

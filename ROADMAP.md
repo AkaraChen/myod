@@ -166,33 +166,35 @@ This is the hardest part. The earlier it starts, the better.
 
 Layout needs something to lay out, so this milestone also builds the declaration layer: widget IDs, containers, and the per-frame declared tree. The examples drive it with a minimal frame loop on top of M0–M2; the Store, input phase and interaction arrive in M4.
 
-- [ ] **Declaration layer**:
-  - [ ] **Widget ID system**: label hash + parent ID stack (`push_id` / `pop_id`), with disambiguation syntax such as `"Label##id"`
-  - [ ] **Cheap declaration** (ARCHITECTURE.md, “Frame tree and performance”): declaring a widget only appends a record to the per-frame arena and computes its ID and content hash; target tens to around a hundred nanoseconds per widget, measured with a micro-benchmark
-  - [ ] Debug check: two widgets with the same ID in one frame trigger an immediate warning (ID instability silently mixes up state)
-  - [ ] Containers close automatically via `@(deferred_out)` and return bool
-  - [ ] **Persistent state storage by ID**: entries not accessed this frame are reclaimed after N frames
-- [ ] **Rust wrapper layer** (`ffi/taffy/`):
-  - [ ] Validate the approach first: implement Taffy's low-level layout tree traits directly on the resolved tree's node array (ARCHITECTURE.md, “Frame tree and performance”), with the layout cache stored in each node and carried across frames. The external API stays immediate mode, and there is no second tree to keep in sync. **This validation matters a lot**: if it fails, a real second tree comes back with its sync costs
-  - [ ] Fallback if validation fails: use Taffy's own node tree, reuse nodes by widget ID, diff every frame, and mark only the changed parts
-  - [ ] Export a C ABI; build static libraries for macOS arm64, Linux x86_64 and arm64 following the process in ARCHITECTURE.md, “Build and dependencies”, and commit them to the repo
-- [ ] Text measurement callback: during layout, Taffy calls back into Odin's `text/`
-- [ ] **flex**: row / column, padding, gap, alignment, fit / grow / fixed sizing, min / max, wrapping
-- [ ] **grid**: fixed tracks, `fr`, `auto`, `minmax`, `repeat(auto-fill, minmax(…))`, gap, row and column spans
-- [ ] flex and grid nest within each other arbitrarily
-- [ ] Layout results are stored by widget ID, for the next frame's input phase and for `ui.size_of`
-- [ ] **Pixel alignment**: round to physical pixels uniformly when converting layout results into `Draw_Command`s, without accumulating rounding error
-- [ ] Draw commands are generated after layout: during `view`, only record what to draw; once layout is computed, generate `Draw_Command`s with the final coordinates
-- [ ] Layout change detection: compare against the sizes `view` read, triggering ghost rendering
-- [ ] **Resolved tree** (ARCHITECTURE.md, “Frame tree and performance”): one record per node holding the declared parameters, layout, text layout, draw commands and semantic information; double-buffered across frames
-- [ ] **Automatic subtree reuse**: Merkle content hash per container; reuse when root ID, hash and parent constraints match; draw commands and semantic bounds stored relative to the subtree origin
-- [ ] **Automatic culling**: a container entirely outside the visible area in the previous frame returns false and leaves a placeholder with its previous size; culled subtrees keep their presentation state
-- [ ] Debug overlay counters: widgets declared, containers culled, subtrees reused, time per stage
+- [x] **Declaration layer** (`core/`, public API in `ui/`):
+  - [x] **Widget ID system**: key or label hashed within the parent container's scope (`push_id` / `pop_id` add scopes), `"Label##id"` (`core.label_id`); unnamed nodes are identified by their position among their siblings
+  - [x] **Cheap declaration**: one record in the pass's node array, an ID, a content hash and a slot lookup. about 95 ns per widget in an optimized build (about 360 ns in a debug build), 10,000 text widgets (`just bench`)
+  - [x] Debug check: a duplicate ID in one pass prints a warning (once per ID) and the second widget gets a separate ID, so the two never share state
+  - [x] Containers close automatically via `@(deferred_out)` and return bool (false when culled)
+  - [x] **Persistent state storage by ID** (`core.state`): slots not declared for 120 frames are reclaimed; slots inside culled containers are kept alive
+- [x] **Rust wrapper layer** (`ffi/`):
+  - [x] Validated: Taffy's low-level tree traits are implemented directly on the node array Odin fills in each pass; styles are read in place (grid containers are converted on first use); Taffy's cache and last layout live in a slot per widget ID, carried across frames. No second tree
+  - Fallback (Taffy's own node tree) not needed
+  - [x] C ABI (`layout/layout.odin` mirrors it and checks the struct sizes at startup). Built by Nix (`third_party/nix/ffi.nix`, crates pinned by `ffi/Cargo.lock`), deterministic, pre-linked into one object that exports only `myod_layout_*` (wgpu-native carries its own Rust standard library). macOS arm64 committed; the Linux recipe is written but not yet built (no Linux builder here)
+- [x] Text measurement callback: Taffy calls back into `text/` (wrapped size for a width, min-content and max-content), rounded up to whole physical pixels
+- [x] **flex**: row / column, padding, gap, alignment, fit / grow / fixed / percent sizing, min / max, wrapping
+- [x] **grid**: fixed tracks, `fr`, `auto`, min/max-content, `minmax`, `repeat(n | auto-fill | auto-fit, track)` of one track, gap, row and column spans. Repeats of several tracks, named lines and areas are not exposed (Taffy supports them)
+- [x] flex and grid nest within each other arbitrarily
+- [x] Layout results are stored by widget ID (the slot's rect), for `ui.size_of` and the next frame's input phase
+- [x] **Pixel alignment**: absolute edges are rounded to physical pixels (no accumulated error); dividers keep their logical thickness, so they are equally thick wherever they land
+- [x] Draw commands are generated after layout, from the final rects, for visible nodes only
+- [x] Layout change detection: a size read with `ui.size_of` that changed, or a culled container that layout moved into view, reruns the pass as a ghost pass (at most 3)
+- [x] **Frame tree** (ARCHITECTURE.md, “Frame tree and performance”): per-pass node arrays, double-buffered, plus per-ID slots. Text layout and draw commands are not stored per node (see the next item)
+- [x] **Automatic subtree reuse**: Merkle content hash per node; a node whose hash matches its slot's keeps its layout cache, and Taffy answers the whole subtree without descending into it. Draw commands are regenerated for visible nodes instead of being copied: measured at 0.01–0.02 ms per frame for a full window, so copying them is not worth the complexity yet. Semantic bounds come with the semantic tree (M4)
+- [x] **Automatic culling**: a container whose last rect is outside the visible area returns false and leaves a placeholder with its previous size; the slots inside stay alive
+- [x] Debug overlay counters: widgets declared, containers culled, widgets reused, nodes laid out, measure calls, passes, time per stage
 
 **Acceptance:**
+- [x] 2026-11-09, macOS arm64: `examples/03_layout`, `03_feed` and `03_long_form` with self-tests in `just test`; `odin test core` for IDs, duplicate IDs, state reclamation, ghost passes, subtree reuse and culling
 - `examples/03_layout`: sidebar + main area + right info panel, separated by 1px dividers, reflowing correctly when the window resizes
 - `examples/03_feed`: a card feed using `repeat(auto-fill, minmax(240px, 1fr))`, with flex layout and wrapping text inside the cards; each row's height is set by its tallest card; the number of cards per row changes as the window resizes
-- **Performance benchmark** `examples/03_long_form`: a long, non-virtualized form page (thousands of widgets). The example changes one field's value programmatically every frame; the whole frame (`view` + layout + draw generation) must stay within a fixed budget on an M3 MacBook Air (exact number set once the first measurements are in), and the debug overlay shows that almost everything off screen is culled and almost everything on screen is reused. The interactive version (typing into a field) is part of M7's acceptance
+- **Performance benchmark** `examples/03_long_form`: a long, non-virtualized form page (5,885 widgets). The example changes one field's value programmatically every frame. **Budget: 1 ms per frame** (`view` + layout + draw generation) in an optimized build on an M3 MacBook Air. Measured (`just bench`): 0.08 ms average, 0.11 ms p99 while editing a visible field; 0.07 ms while scrolling 40px per frame. About 180 widgets declared, 120 containers culled, 170 of 177 widgets reused and 7 nodes laid out per frame. The interactive version (typing into a field) is part of M7's acceptance
+- Bugs found on the way: `text.wrap` never held the last line to the width (libunibreak marks the end of the text as undecided), and destroying a renderer that never drew crashed in wgpu-native; both fixed, the first with a regression check in `02_text`
 
 **Reading:** the Taffy source (especially the grid track sizing algorithm and the low-level trait API); the track sizing part of the CSS Grid spec
 

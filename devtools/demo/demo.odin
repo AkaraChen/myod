@@ -2,7 +2,8 @@
 // scale and theme, the debug overlays, and offscreen capture for self-tests.
 //
 // Keys: 1 / 2 / 3 / 4 simulate a 1x / 1.25x / 1.5x / 2x display scale (0 returns to the real
-// scale); d toggles light / dark.
+// scale); d toggles light / dark. Pages that set `scrollable` scroll with the mouse wheel (a stand-in
+// until scroll containers arrive in M6); pages that set `continuous` redraw every vsync.
 package demo
 
 import "core:fmt"
@@ -11,6 +12,7 @@ import "core:os"
 import "core:time"
 
 import "../../backend"
+import "../../core"
 import "../../platform"
 import "../../render"
 import "../../text"
@@ -33,6 +35,10 @@ App :: struct {
 	scale:       f32, // 0 = the real display scale
 	draw:        Draw_Proc,
 	data:        rawptr,
+	ui:          ^core.Context, // set by examples built with core/, for the stats overlay
+	scrollable:  bool, // the wheel moves `scroll`, which the page applies itself
+	scroll:      [2]f32,
+	continuous:  bool, // redraw every vsync instead of waiting for events
 	text:        text.Context, // declared last: inside the struct, `text` names this field
 }
 
@@ -76,7 +82,7 @@ run :: proc(app: ^App) {
 	platform.set_redraw(app.window, redraw, app)
 	redraw(app)
 	for {
-		e := platform.wait_event()
+		e := platform.poll_event() if app.continuous else platform.wait_event()
 		#partial switch e.kind {
 		case .Quit:
 			return
@@ -94,6 +100,10 @@ run :: proc(app: ^App) {
 			case 'd':
 				app.mode = .Light if app.mode == .Dark else .Dark
 				app.mode_forced = true
+			}
+		case .Wheel:
+			if app.scrollable {
+				app.scroll.y = max(0, app.scroll.y - e.wheel.y * 40)
 			}
 		}
 		redraw(app)
@@ -125,7 +135,7 @@ redraw :: proc(data: rawptr) {
 		devtools.atlas_overlay(&list, &app.text, view, scale, t)
 	}
 	if flags.render {
-		devtools.render_overlay(&list, &app.text, app.renderer.stats, view, scale, t)
+		devtools.render_overlay(&list, &app.text, app.renderer.stats, view, scale, t, &app.ui.stats if app.ui != nil else nil)
 	}
 
 	frame, ok := backend.begin_frame(app.gpu, &app.surface, size)
@@ -164,7 +174,7 @@ capture :: proc(app: ^App, mode: theme.Mode, scale: f32, view: [2]f32) -> (backe
 		devtools.atlas_overlay(&list, &app.text, view, scale, t)
 	}
 	if flags.render {
-		devtools.render_overlay(&list, &app.text, app.renderer.stats, view, scale, t)
+		devtools.render_overlay(&list, &app.text, app.renderer.stats, view, scale, t, &app.ui.stats if app.ui != nil else nil)
 	}
 	return backend.capture(app.gpu, &app.renderer, size, scale, list, t.on_bg.bg, context.temp_allocator, &app.text.atlases)
 }

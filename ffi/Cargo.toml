@@ -1,0 +1,24 @@
+[package]
+name = "myod_ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "myod's Rust dependencies behind a C ABI: Taffy layout (later also AccessKit)"
+license = "Zlib"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+taffy = { version = "=0.15.1", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+debug = false
+
+[profile.dev]
+panic = "abort"

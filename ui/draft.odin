@@ -1,9 +1,9 @@
-// API draft: signatures only, no implementation. It lets examples/ type-check; the real
-// implementation replaces it milestone by milestone (see ROADMAP.md). See ARCHITECTURE.md, "API design".
+// API draft for what later milestones implement: signatures only, no implementation. It lets the API
+// examples (counter, todomvc, download) type-check; the real implementation replaces it milestone by
+// milestone (see ROADMAP.md). See ARCHITECTURE.md, "API design".
 package ui
-import "base:intrinsics"
 
-import "../icons"
+import "base:intrinsics"
 
 // ---- Windows and the frame loop ----
 Window_Options :: struct { title: string, size: [2]int }
@@ -11,7 +11,8 @@ Window :: struct { _: rawptr }
 open_window :: proc(opts: Window_Options) -> Window { return {} }
 close_window :: proc(w: ^Window) {}
 next_frame :: proc(w: ^Window) -> bool { return false }
-@(deferred_out = _end) window_scope :: proc(w: ^Window) -> bool { return true }
+@(deferred_out = _window_scope_end) window_scope :: proc(w: ^Window) -> bool { return true }
+_window_scope_end :: proc(ok: bool) {}
 
 // ---- Store ----
 Store :: struct($S, $M: typeid) { state: S, _: rawptr }
@@ -35,35 +36,10 @@ cancelled :: proc(t: ^Task_Context($M)) -> bool { return false }
 Inbox :: struct($T: typeid) { _: rawptr }
 wake :: proc(w: ^Window) {}
 
-// ---- Layout ----
-Icon :: icons.Icon
-Size_Kind :: enum { Fit, Grow, Fixed }
-Size :: struct { kind: Size_Kind, value, min, max: f32 }
-grow :: proc(min: f32 = 0, max: f32 = max(f32)) -> Size { return {kind = .Grow, min = min, max = max} }
-fixed :: proc(v: f32) -> Size { return {kind = .Fixed, value = v} }
-Align :: enum { Start, Center, End }
-Id :: union { int, string }
-Container_Options :: struct { id: Id, width, height: Size, padding, gap: f32, align_x, align_y: Align }
-@(deferred_out = _end) column :: proc(o: Container_Options = {}) -> bool { return true }
-@(deferred_out = _end) row :: proc(o: Container_Options = {}) -> bool { return true }
-@(deferred_out = _end) scroll :: proc(o: Container_Options = {}) -> bool { return true }
-@(deferred_out = _end) list_item :: proc(o: Container_Options = {}) -> bool { return true }
-_end :: proc(ok: bool) {}
-spacer :: proc() {}
-
 // ---- Widgets ----
-Rect :: struct { x, y, w, h: f32 }
-Response :: struct {
-	id: Id, rect: Rect,
-	hovered, pressed, clicked, double_clicked: bool,
-	changed, submitted, cancelled, focused, lost_focus: bool,
-}
-Text_Style :: enum { Display, Page_Title, Title, Section, Subsection, Lede, Body, Compact, Label, Metadata }
-Color :: enum { Fg, Muted, Faint, Error, Warning, Success, Info }
 Button_Variant :: enum { Outline, Primary, Ghost, Danger }
 Control_Size :: enum { Default, Small }
 
-text :: proc(s: string, style: Text_Style = .Body, color: Color = .Fg, width: Size = {}) -> Response { return {} }
 button :: proc(label: string, icon: Icon = {}, variant: Button_Variant = .Outline, size: Control_Size = .Default, disabled := false) -> Response { return {} }
 icon_button :: proc(icon: Icon, label: string, variant: Button_Variant = .Outline, size: Control_Size = .Default, disabled := false) -> Response { return {} }
 checkbox :: proc(value: bool, label := "", disabled := false) -> Response { return {} }

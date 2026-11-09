@@ -26,12 +26,15 @@ Event_Kind :: enum {
 	Quit,
 	Theme_Changed,
 	Key_Down,
+	Wheel,
 }
 
 Event :: struct {
-	kind: Event_Kind,
+	kind:  Event_Kind,
 	// For Key_Down: the key code. Letters are lowercase ASCII, digits are ASCII digits.
-	key:  rune,
+	key:   rune,
+	// For Wheel: the scroll amount, positive away from the user (up) and to the right.
+	wheel: [2]f32,
 }
 
 @(private)
@@ -106,6 +109,12 @@ translate :: proc(e: sdl.Event) -> Event {
 		if !e.key.repeat {
 			return {kind = .Key_Down, key = rune(e.key.key)}
 		}
+	case .MOUSE_WHEEL:
+		w := [2]f32{e.wheel.x, e.wheel.y}
+		if e.wheel.direction == .FLIPPED {
+			w = -w
+		}
+		return {kind = .Wheel, wheel = w}
 	}
 	return {kind = .Other}
 }
