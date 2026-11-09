@@ -14,8 +14,11 @@ import "core:unicode"
 import "core:unicode/utf8"
 
 import "../atlas"
+import "../icons"
 import "../render"
+import "../sprite"
 import "../theme"
+import svg "../third_party/odin/myod_svg"
 import ub "../third_party/odin/unibreak"
 
 Weight :: enum u8 {
@@ -35,6 +38,7 @@ Style :: struct {
 	features:       string,
 	// Variable font axes: "wght=450 wdth=90". Axes not listed keep their defaults.
 	variations:     string,
+	underline:      bool,
 	// Uppercase Latin letters before shaping; Chinese and other scripts are left alone.
 	uppercase:      bool,
 	// Extra space after each Latin character, in em. Rounded to whole physical pixels so glyphs
@@ -61,10 +65,14 @@ NO_FONT :: max(Font_Id)
 // One shaped glyph. Positions are in physical pixels from the start of the run.
 Shaped_Glyph :: struct {
 	face:    Face_Id, // may differ from the requested face when a fallback font supplied the glyph
-	glyph:   u32,
+	glyph:   u32,     // a glyph index, or the code point when face is SPRITE_FACE
 	x, y:    f32,
-	cluster: u32, // UTF-8 byte offset of the cluster in the source string
+	advance: f32,     // distance to the next glyph (the cell width, for sprite glyphs)
+	cluster: u32,     // UTF-8 byte offset of the cluster in the source string
 }
+
+// The face of glyphs drawn by the sprite package (box drawing, blocks, Braille, Powerline).
+SPRITE_FACE :: max(Face_Id) - 1
 
 Shaped :: struct {
 	glyphs:  []Shaped_Glyph,
@@ -96,7 +104,11 @@ SUBPIXEL_STEPS :: 4
 // Shaping results unused for this many frames are evicted.
 SHAPE_CACHE_FRAMES :: 120
 
+// Atlas pages are ATLAS_SIZE × ATLAS_SIZE. The budget follows ARCHITECTURE.md, "Rendering backend":
+// 4 mask pages (16MB) and 2 color pages (32MB).
 ATLAS_SIZE :: 2048
+MASK_PAGES :: 4
+COLOR_PAGES :: 2
 
 Context :: struct {
 	backend: Backend,
@@ -104,6 +116,7 @@ Context :: struct {
 	dwg:     [Weight]Font_Id,
 	fonts:   [dynamic]Font_Id, // Font_Ref → Font_Id; index 0 is unused (it means DWG)
 	glyphs:  map[Glyph_Key]Glyph_Entry,
+	icons:   map[Icon_Key]Glyph_Entry,
 	shapes:  map[Shape_Key]Shape_Entry,
 	frame:   u64,
 }
@@ -113,12 +126,22 @@ Glyph_Key :: struct {
 	face:     Face_Id,
 	glyph:    u32,
 	subpixel: u8,
+	cell:     [2]i32, // sprite glyphs only: the cell size they were drawn for
+}
+
+@(private)
+Icon_Key :: struct {
+	name:   string, // icon names are static strings from icons/phosphor
+	weight: icons.Weight,
+	layer:  i8,
+	size:   i32, // physical pixels
 }
 
 @(private)
 Glyph_Entry :: struct {
 	kind:   atlas.Kind,
-	texel:  [4]i32,
+	loc:    atlas.Location,
+	size:   [2]i32,
 	offset: [2]i32, // bitmap top-left relative to the pen position, y down
 	empty:  bool,
 }
@@ -139,8 +162,9 @@ Shape_Entry :: struct {
 }
 
 // Loads DWG (DESIGN.md, "Typography") from `font_dir`, from $MYOD_FONT_DIR, or from
-// third_party/fonts relative to the working directory.
-init :: proc(ctx: ^Context, font_dir := "") -> bool {
+// third_party/fonts relative to the working directory. The atlas parameters exist for tests that
+// need to force page eviction.
+init :: proc(ctx: ^Context, font_dir := "", atlas_size: i32 = ATLAS_SIZE, mask_pages := MASK_PAGES, color_pages := COLOR_PAGES) -> bool {
 	if !backend_init(&ctx.backend) {
 		return false
 	}
@@ -148,8 +172,8 @@ init :: proc(ctx: ^Context, font_dir := "") -> bool {
 	ub.init_linebreak()
 	ub.init_graphemebreak()
 	ub.init_wordbreak()
-	atlas.init(&ctx.atlases[.Mask], .Mask, ATLAS_SIZE)
-	atlas.init(&ctx.atlases[.Color], .Color, ATLAS_SIZE)
+	atlas.init(&ctx.atlases[.Mask], .Mask, atlas_size, mask_pages)
+	atlas.init(&ctx.atlases[.Color], .Color, atlas_size, color_pages)
 
 	dir := font_dir
 	if dir == "" {
@@ -188,6 +212,7 @@ destroy :: proc(ctx: ^Context) {
 	}
 	delete(ctx.shapes)
 	delete(ctx.glyphs)
+	delete(ctx.icons)
 	delete(ctx.fonts)
 	for &a in ctx.atlases {
 		atlas.destroy(&a)
@@ -195,9 +220,12 @@ destroy :: proc(ctx: ^Context) {
 	backend_destroy(&ctx.backend)
 }
 
-// Call once per frame: evicts shaping results that have not been used recently.
+// Call once per frame: tracks atlas page use and evicts shaping results not used recently.
 begin_frame :: proc(ctx: ^Context) {
 	ctx.frame += 1
+	for &a in ctx.atlases {
+		atlas.begin_frame(&a)
+	}
 	if ctx.frame % 60 != 0 {
 		return
 	}
@@ -310,6 +338,7 @@ shape :: proc(ctx: ^Context, s: string, style: Style, scale: f32) -> Shaped {
 	if spacing != 0 {
 		apply_letter_spacing(&shaped, s, spacing)
 	}
+	finish_glyphs(&shaped, s)
 	key.text = strings.clone(s)
 	ctx.shapes[key] = {shaped = shaped, last_used = ctx.frame}
 	return shaped
@@ -325,7 +354,7 @@ measure :: proc(ctx: ^Context, s: string, style: Style, scale: f32) -> [2]f32 {
 // ascent + descent is centered vertically in the line box.
 draw :: proc(list: ^render.Command_List, ctx: ^Context, s: string, pos: [2]f32, style: Style, scale: f32) {
 	sh := shape(ctx, s, style, scale)
-	draw_glyphs(list, ctx, sh, 0, len(s), 0, pos, style, scale)
+	draw_glyphs(list, ctx, sh, 0, len(s), 0, sh.width, pos, style, scale)
 }
 
 // Breaks `s` into lines no wider than `max_width` (logical pixels) at UAX #14 break opportunities.
@@ -387,15 +416,18 @@ measure_wrapped :: proc(ctx: ^Context, s: string, style: Style, max_width: f32, 
 draw_wrapped :: proc(list: ^render.Command_List, ctx: ^Context, s: string, pos: [2]f32, style: Style, max_width: f32, scale: f32) {
 	sh := shape(ctx, s, style, scale)
 	for l, i in wrap(ctx, s, style, max_width, scale) {
-		draw_glyphs(list, ctx, sh, l.start, l.end, l.x0, {pos.x, pos.y + f32(i) * style.line_height}, style, scale)
+		draw_glyphs(list, ctx, sh, l.start, l.end, l.x0, l.width, {pos.x, pos.y + f32(i) * style.line_height}, style, scale)
 	}
 }
 
-// Emits the glyphs of `sh` whose clusters fall in [start, end), shifted left by `x0`.
+// Emits the glyphs of `sh` whose clusters fall in [start, end), shifted left by `x0`; `width` is the
+// line's width in physical pixels (for the underline).
 @(private)
-draw_glyphs :: proc(list: ^render.Command_List, ctx: ^Context, sh: Shaped, start, end: int, x0: f32, pos: [2]f32, style: Style, scale: f32) {
-	line_h := style.line_height * scale
-	baseline := math.round(pos.y * scale + (line_h - (sh.ascent + sh.descent)) / 2 + sh.ascent)
+draw_glyphs :: proc(list: ^render.Command_List, ctx: ^Context, sh: Shaped, start, end: int, x0, width: f32, pos: [2]f32, style: Style, scale: f32) {
+	line_top := math.round(pos.y * scale)
+	line_bottom := math.round((pos.y + style.line_height) * scale)
+	baseline := math.round(pos.y * scale + (line_bottom - line_top - (sh.ascent + sh.descent)) / 2 + sh.ascent)
+	phys := physical_size(style.size, scale)
 
 	quads := make([dynamic]render.Glyph_Quad, 0, len(sh.glyphs), context.temp_allocator)
 	for g in sh.glyphs {
@@ -403,6 +435,18 @@ draw_glyphs :: proc(list: ^render.Command_List, ctx: ^Context, sh: Shaped, start
 			continue
 		}
 		x := g.x - x0
+		if g.face == SPRITE_FACE {
+			// Sprites fill the whole cell: the glyph's advance by the line box, on whole pixels, so
+			// cells join with no gaps horizontally and line boxes join vertically.
+			ix := math.round(x)
+			cell := [2]i32{i32(math.round(x + g.advance) - ix), i32(line_bottom - line_top)}
+			e := sprite_entry(ctx, rune(g.glyph), cell, i32(max(1, math.round(phys / 16))))
+			if e.empty {
+				continue
+			}
+			append(&quads, quad(e, {i32(ix), i32(line_top - baseline)}))
+			continue
+		}
 		ix := math.floor(x)
 		step := int(math.round((x - ix) * SUBPIXEL_STEPS))
 		if step == SUBPIXEL_STEPS {
@@ -418,15 +462,22 @@ draw_glyphs :: proc(list: ^render.Command_List, ctx: ^Context, sh: Shaped, start
 			// Emoji bitmaps carry inconsistent vertical placement across fonts and backends
 			// (Apple's sbix relies on another table that FreeType ignores). Center them on the
 			// midpoint of the primary font's ascent and descent instead, as Ghostty centers emoji.
-			y = i32(math.round(-(sh.ascent - sh.descent) / 2 - f32(e.texel[3]) / 2))
+			y = i32(math.round(-(sh.ascent - sh.descent) / 2 - f32(e.size.y) / 2))
 		}
-		append(&quads, render.Glyph_Quad {
-			atlas = e.kind,
-			texel = e.texel,
-			offset = {i32(ix) + e.offset.x, y},
-		})
+		append(&quads, quad(e, {i32(ix) + e.offset.x, y}))
 	}
 	append(&list.commands, render.Cmd_Glyph_Run{origin = {pos.x, baseline / scale}, color = style.color, quads = quads[:]})
+
+	if style.underline && width > 0 {
+		thickness := max(1, math.round(phys / 16))
+		y := baseline + max(1, math.round(phys * 0.08))
+		render.line(list, {pos.x, y / scale, width / scale, thickness / scale}, style.color)
+	}
+}
+
+@(private)
+quad :: proc(e: Glyph_Entry, offset: [2]i32) -> render.Glyph_Quad {
+	return {atlas = e.kind, page = e.loc.page, texel = {e.loc.x, e.loc.y, e.size.x, e.size.y}, offset = offset}
 }
 
 // x position (physical pixels) at each byte offset of the source, from the shaped run: the start
@@ -517,24 +568,180 @@ is_cjk :: proc(r: rune) -> bool {
 	return false
 }
 
+// Fills in each glyph's advance and swaps characters the sprite package draws for sprite glyphs.
+@(private)
+finish_glyphs :: proc(sh: ^Shaped, s: string) {
+	for i in 0 ..< len(sh.glyphs) {
+		g := &sh.glyphs[i]
+		next := sh.width if i + 1 == len(sh.glyphs) else sh.glyphs[i + 1].x
+		g.advance = next - g.x
+		r, _ := utf8.decode_rune_in_string(s[g.cluster:])
+		if sprite.covers(r) {
+			g.face = SPRITE_FACE
+			g.glyph = u32(r)
+		}
+	}
+}
+
+// Looks up or rasterizes a glyph. Entries whose atlas page was evicted are rasterized again.
 @(private)
 glyph_entry :: proc(ctx: ^Context, face: Face_Id, glyph: u32, subpixel: u8) -> Glyph_Entry {
-	key := Glyph_Key{face, glyph, subpixel}
-	if e, found := ctx.glyphs[key]; found {
+	key := Glyph_Key{face = face, glyph = glyph, subpixel = subpixel}
+	if e, found := ctx.glyphs[key]; found && (e.empty || atlas.valid(&ctx.atlases[e.kind], e.loc)) {
+		atlas.touch(&ctx.atlases[e.kind], e.loc.page)
 		return e
 	}
 	bm := backend_rasterize(&ctx.backend, face, glyph, f32(subpixel) / SUBPIXEL_STEPS, context.temp_allocator)
-	e := Glyph_Entry{empty = true}
-	if bm.w > 0 && bm.h > 0 {
-		kind := atlas.Kind.Color if bm.color else atlas.Kind.Mask
-		a := &ctx.atlases[kind]
-		x, y, ok := atlas.alloc(a, bm.w, bm.h)
-		if ok {
-			atlas.write(a, x, y, bm.w, bm.h, bm.pixels, bm.w * a.bpp)
-			e = {kind = kind, texel = {x, y, bm.w, bm.h}, offset = {bm.left, -bm.top}}
-		}
-		// A full atlas drops the glyph for now; paging and eviction come later in M2.
-	}
+	e := store(ctx, bm)
 	ctx.glyphs[key] = e
 	return e
+}
+
+@(private)
+sprite_entry :: proc(ctx: ^Context, r: rune, cell: [2]i32, thickness: i32) -> Glyph_Entry {
+	key := Glyph_Key{face = SPRITE_FACE, glyph = u32(r), cell = cell}
+	if e, found := ctx.glyphs[key]; found && (e.empty || atlas.valid(&ctx.atlases[e.kind], e.loc)) {
+		atlas.touch(&ctx.atlases[e.kind], e.loc.page)
+		return e
+	}
+	pixels, ok := sprite.rasterize(r, cell.x, cell.y, thickness, context.temp_allocator)
+	bm := Bitmap{w = cell.x, h = cell.y, pixels = pixels} if ok else Bitmap{}
+	e := store(ctx, bm)
+	ctx.glyphs[key] = e
+	return e
+}
+
+// Copies a bitmap into the right atlas. A bitmap that does not fit at all yields an empty entry.
+@(private)
+store :: proc(ctx: ^Context, bm: Bitmap) -> Glyph_Entry {
+	if bm.w <= 0 || bm.h <= 0 {
+		return {empty = true}
+	}
+	kind := atlas.Kind.Color if bm.color else atlas.Kind.Mask
+	a := &ctx.atlases[kind]
+	loc, ok := atlas.alloc(a, bm.w, bm.h)
+	if !ok {
+		return {empty = true}
+	}
+	atlas.write(a, loc, bm.w, bm.h, bm.pixels, bm.w * a.bpp)
+	atlas.touch(a, loc.page)
+	return {kind = kind, loc = loc, size = {bm.w, bm.h}, offset = {bm.left, -bm.top}}
+}
+
+// ---- Icons ----
+
+// Draws an SVG icon `size` logical pixels square with its top-left at `pos`, in mask mode so it takes
+// `color`. Rasterized at a whole number of physical pixels and placed on whole pixels
+// (DESIGN.md, "Icons"). Duotone's background layer uses `secondary`, or `color` at 20% opacity.
+draw_icon :: proc(list: ^render.Command_List, ctx: ^Context, icon: icons.Icon, weight: icons.Weight, pos: [2]f32, size: f32, color: theme.Color, scale: f32, secondary := theme.Color{}) {
+	px := i32(math.round(size * scale))
+	if weight == .Duotone {
+		back := secondary if secondary.a > 0 else theme.with_alpha(color, 0.2)
+		icon_run(list, ctx, icon, weight, svg.LAYER_TRANSLUCENT, px, pos, back)
+		icon_run(list, ctx, icon, weight, svg.LAYER_OPAQUE, px, pos, color)
+	} else {
+		icon_run(list, ctx, icon, weight, svg.LAYER_ALL, px, pos, color)
+	}
+}
+
+@(private)
+icon_run :: proc(list: ^render.Command_List, ctx: ^Context, icon: icons.Icon, weight: icons.Weight, layer: i32, px: i32, pos: [2]f32, color: theme.Color) {
+	e := icon_entry(ctx, icon, weight, layer, px)
+	if e.empty {
+		return
+	}
+	quads := make([]render.Glyph_Quad, 1, context.temp_allocator)
+	quads[0] = quad(e, {0, 0})
+	append(&list.commands, render.Cmd_Glyph_Run{origin = pos, color = color, quads = quads})
+}
+
+@(private)
+icon_entry :: proc(ctx: ^Context, icon: icons.Icon, weight: icons.Weight, layer: i32, px: i32) -> Glyph_Entry {
+	key := Icon_Key{name = icon.name, weight = weight, layer = i8(layer), size = px}
+	if e, found := ctx.icons[key]; found && (e.empty || atlas.valid(&ctx.atlases[e.kind], e.loc)) {
+		atlas.touch(&ctx.atlases[e.kind], e.loc.page)
+		return e
+	}
+	source := icon.svg[weight]
+	e := Glyph_Entry{empty = true}
+	if len(source) > 0 && px > 0 {
+		doc := make([]u8, len(source) + 1, context.temp_allocator) // NUL-terminated, parsed in place
+		copy(doc, source)
+		rgba := make([]u8, int(px * px * 4), context.temp_allocator)
+		if svg.rasterize(raw_data(doc), px, layer, 1, raw_data(rgba)) == 0 {
+			coverage := make([]u8, int(px * px), context.temp_allocator)
+			for i in 0 ..< len(coverage) {
+				coverage[i] = rgba[i * 4 + 3]
+			}
+			e = store(ctx, Bitmap{w = px, h = px, pixels = coverage})
+		}
+	}
+	ctx.icons[key] = e
+	return e
+}
+
+// ---- Lines mixing text and icons ----
+
+Inline_Icon :: struct {
+	icon:   icons.Icon,
+	weight: icons.Weight,
+}
+
+// A piece of a line: text in the line's style, or an icon sized to the style's font size.
+Item :: union {
+	string,
+	Inline_Icon,
+}
+
+// Gap between an inline icon and its neighbors, in em.
+INLINE_ICON_GAP :: 0.25
+
+// Size of a single line of items in logical pixels.
+measure_items :: proc(ctx: ^Context, items: []Item, style: Style, scale: f32) -> [2]f32 {
+	width: f32 = 0
+	for item, i in items {
+		width += item_width(ctx, item, i, len(items), style, scale)
+	}
+	return {width / scale, style.line_height}
+}
+
+// Draws a single line of items; icons are vertically centered on the line, like emoji.
+draw_items :: proc(list: ^render.Command_List, ctx: ^Context, items: []Item, pos: [2]f32, style: Style, scale: f32) {
+	x: f32 = math.round(pos.x * scale)
+	for item, i in items {
+		switch v in item {
+		case string:
+			draw(list, ctx, v, {x / scale, pos.y}, style, scale)
+		case Inline_Icon:
+			sh := shape(ctx, "", style, scale)
+			px := math.round(style.size * scale)
+			line_top := math.round(pos.y * scale)
+			line_h := math.round((pos.y + style.line_height) * scale) - line_top
+			baseline := math.round(line_top + (line_h - (sh.ascent + sh.descent)) / 2 + sh.ascent)
+			top := math.round(baseline - (sh.ascent - sh.descent) / 2 - px / 2)
+			gap := math.round(INLINE_ICON_GAP * physical_size(style.size, scale))
+			left := x + (gap if i > 0 else 0)
+			draw_icon(list, ctx, v.icon, v.weight, {left / scale, top / scale}, style.size, style.color, scale)
+		}
+		x += item_width(ctx, item, i, len(items), style, scale)
+	}
+}
+
+@(private)
+item_width :: proc(ctx: ^Context, item: Item, index, count: int, style: Style, scale: f32) -> f32 {
+	switch v in item {
+	case string:
+		return math.round(shape(ctx, v, style, scale).width)
+	case Inline_Icon:
+		gap := math.round(INLINE_ICON_GAP * physical_size(style.size, scale))
+		w := math.round(style.size * scale)
+		if index > 0 {
+			w += gap
+		}
+		if index + 1 < count {
+			w += gap
+		}
+		return w
+	}
+	return 0
 }

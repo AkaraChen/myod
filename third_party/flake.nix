@@ -24,7 +24,7 @@
         libpng = pkgs.callPackage ./nix/libpng.nix { source = sources.libpng; inherit zlib; };
         freetype = pkgs.callPackage ./nix/freetype.nix { source = sources.freetype; inherit libpng zlib; };
         harfbuzz = pkgs.callPackage ./nix/harfbuzz.nix { source = sources.harfbuzz; inherit freetype; };
-        text-shim = pkgs.callPackage ./nix/text-shim.nix { inherit freetype; };
+        text-shim = pkgs.callPackage ./nix/text-shim.nix { inherit freetype; nanosvg = sources.nanosvg; };
         libunibreak = pkgs.callPackage ./nix/libunibreak.nix { source = sources.libunibreak; };
         wgpu-native = pkgs.callPackage ./nix/wgpu-native.nix {
           source = sources.wgpu_native;
@@ -33,6 +33,7 @@
 
         # Fonts are platform-independent; they go into fonts/
         fonts = pkgs.callPackage ./nix/fonts.nix { source = sources.dwg; };
+        phosphor = pkgs.callPackage ./nix/phosphor.nix { source = sources.phosphor; };
 
         # Everything that goes into prebuilt/<platform>/
         prebuilt = pkgs.runCommand "myod-prebuilt-${platforms.${system}}" { } ''

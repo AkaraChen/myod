@@ -4,6 +4,7 @@ package backend
 import "base:runtime"
 
 import wgpu "../third_party/odin/wgpu"
+import "../atlas"
 import "../render"
 
 // Pixels read back from the GPU, tightly packed RGBA8 in sRGB, row-major from the top-left.
@@ -22,6 +23,7 @@ capture :: proc(
 	list: render.Command_List,
 	clear: render.Color,
 	allocator := context.allocator,
+	atlases: ^[atlas.Kind]atlas.Atlas = nil,
 ) -> (out: Capture, ok: bool) {
 	texture := wgpu.DeviceCreateTexture(
 		gpu.device,
@@ -47,7 +49,7 @@ capture :: proc(
 	defer wgpu.BufferRelease(buffer)
 
 	encoder := wgpu.DeviceCreateCommandEncoder(gpu.device, nil)
-	renderer_draw(gpu, r, encoder, view, size, scale, list, clear)
+	renderer_draw(gpu, r, encoder, view, size, scale, list, clear, atlases)
 	wgpu.CommandEncoderCopyTextureToBuffer(
 		encoder,
 		&{texture = texture, aspect = .All},

@@ -3,8 +3,9 @@
 //
 // Font fallback: before shaping, the text is split into grapheme clusters, and each cluster takes
 // the first font in [requested font, fallback fonts…] that has its first character. Consecutive
-// clusters with the same font are shaped together. The fallback list is built in for now (macOS
-// system fonts, so the backend can be tested on a Mac); on Linux it will come from Fontconfig.
+// clusters with the same font are shaped together. On macOS the fallback list is built in (so the
+// backend can be tested on a Mac); on Linux, a character no listed font has is looked up with
+// Fontconfig, and the font it finds joins the list.
 package text
 
 import "core:math"
@@ -12,9 +13,14 @@ import "core:os"
 import "core:strings"
 import "core:unicode/utf8"
 
+import fc "../third_party/odin/fontconfig"
 import hb "../third_party/odin/harfbuzz"
 import ft "../third_party/odin/myod_ft"
 import ub "../third_party/odin/unibreak"
+
+// Each import is only used on some platforms (Fontconfig on Linux, the built-in list on macOS).
+_ :: fc
+_ :: os
 
 FreeType_Backend :: struct {
 	lib:      ft.Library,
@@ -22,14 +28,27 @@ FreeType_Backend :: struct {
 	faces:    [dynamic]FreeType_Face,
 	fallback: [dynamic]Font_Id, // tried in order when a face lacks a character
 	buffer:   ^hb.Buffer,
+	using _:  Fontconfig_State,
+}
+
+when ODIN_OS == .Linux {
+	@(private)
+	Fontconfig_State :: struct {
+		fontconfig: ^fc.Config,
+		looked_up:  map[rune]struct{}, // characters already looked up with Fontconfig
+	}
+} else {
+	@(private)
+	Fontconfig_State :: struct {}
 }
 
 // A font is either loaded into memory (its data must outlive its faces) or opened by path.
 @(private)
 FreeType_Font :: struct {
 	data:   []u8,
-	path:   string,
-	failed: bool, // a path-based font FreeType could not open; skipped from then on
+	path:   string, // owned
+	index:  i64,    // face index within a collection (.ttc)
+	failed: bool,   // a path-based font FreeType could not open; skipped from then on
 }
 
 @(private)
@@ -71,10 +90,13 @@ freetype_init :: proc(b: ^FreeType_Backend) -> bool {
 	when ODIN_OS == .Darwin {
 		for path in MACOS_FALLBACK_FONTS {
 			if os.exists(path) {
-				append(&b.fonts, FreeType_Font{path = path})
+				append(&b.fonts, FreeType_Font{path = strings.clone(path)})
 				append(&b.fallback, Font_Id(len(b.fonts) - 1))
 			}
 		}
+	}
+	when ODIN_OS == .Linux {
+		b.fontconfig = fc.InitLoadConfigAndFonts()
 	}
 	return true
 }
@@ -89,6 +111,13 @@ freetype_destroy :: proc(b: ^FreeType_Backend) {
 	}
 	for font in b.fonts {
 		delete(font.data)
+		delete(font.path)
+	}
+	when ODIN_OS == .Linux {
+		if b.fontconfig != nil {
+			fc.ConfigDestroy(b.fontconfig)
+		}
+		delete(b.looked_up)
 	}
 	delete(b.faces)
 	delete(b.fonts)
@@ -118,7 +147,7 @@ open_ft_face :: proc(b: ^FreeType_Backend, font: Font_Id) -> (face: ft.Face, ok:
 	if src.data != nil {
 		err = ft.new_face(b.lib, raw_data(src.data), i64(len(src.data)), &face)
 	} else {
-		err = ft.new_face_file(b.lib, strings.clone_to_cstring(src.path, context.temp_allocator), 0, &face)
+		err = ft.new_face_file(b.lib, strings.clone_to_cstring(src.path, context.temp_allocator), src.index, &face)
 	}
 	return face, err == 0
 }
@@ -181,7 +210,58 @@ face_for_rune :: proc(b: ^FreeType_Backend, primary: Face_Id, r: rune) -> Face_I
 			return fb
 		}
 	}
+	when ODIN_OS == .Linux {
+		if font, found := fontconfig_font_for(b, r); found {
+			fb := freetype_face(b, font, size, "", "")
+			if fb != NO_FACE && ft.char_index(b.faces[fb].face, u32(r)) != 0 {
+				return fb
+			}
+		}
+	}
 	return primary
+}
+
+when ODIN_OS == .Linux {
+	// Asks Fontconfig for a font that covers `r` and adds it to the fallback list. Each character
+	// is looked up at most once.
+	@(private)
+	fontconfig_font_for :: proc(b: ^FreeType_Backend, r: rune) -> (Font_Id, bool) {
+		if b.fontconfig == nil || r in b.looked_up {
+			return NO_FONT, false
+		}
+		b.looked_up[r] = {}
+
+		pattern := fc.PatternCreate()
+		defer fc.PatternDestroy(pattern)
+		charset := fc.CharSetCreate()
+		defer fc.CharSetDestroy(charset)
+		fc.CharSetAddChar(charset, u32(r))
+		fc.PatternAddCharSet(pattern, fc.CHARSET, charset)
+		fc.PatternAddBool(pattern, fc.SCALABLE, true)
+		fc.ConfigSubstitute(b.fontconfig, pattern, .Pattern)
+		fc.DefaultSubstitute(pattern)
+		result: fc.Result
+		match := fc.FontMatch(b.fontconfig, pattern, &result)
+		if match == nil {
+			return NO_FONT, false
+		}
+		defer fc.PatternDestroy(match)
+		file: cstring
+		index: i32
+		if fc.PatternGetString(match, fc.FILE, 0, &file) != .Match {
+			return NO_FONT, false
+		}
+		fc.PatternGetInteger(match, fc.INDEX, 0, &index)
+		path := string(file)
+		for font, i in b.fonts {
+			if font.path == path && font.index == i64(index) {
+				return Font_Id(i), true // already in the list; it does not have `r` after all
+			}
+		}
+		append(&b.fonts, FreeType_Font{path = strings.clone(path), index = i64(index)})
+		append(&b.fallback, Font_Id(len(b.fonts) - 1))
+		return Font_Id(len(b.fonts) - 1), true
+	}
 }
 
 freetype_shape :: proc(b: ^FreeType_Backend, face: Face_Id, s: string, allocator := context.allocator) -> Shaped {

@@ -549,7 +549,9 @@ Layers are drawn in layer stack order, and within a layer in declaration order (
 - **R8 atlas**: glyphs, Phosphor icons (single-color, mask mode). After an SVG is rasterized, only the alpha channel is kept
 - **RGBA atlas**: emoji, multicolor SVGs (color mode)
 - Both are bound at the same time, and a mode flag on each instance decides which one to sample; there is still only one pipeline
-- They grow by pages; when full, **evict a whole page, the least recently used one**, and re-rasterize when needed
+- Each atlas is a set of square pages; on the GPU it is one `texture_2d_array` with a layer per page, and each instance carries its page index. Every page keeps a white texel at (0, 0) for solid rectangles
+- They grow by pages; when full, **evict a whole page, the least recently used one**, and re-rasterize when needed. Eviction bumps the page's generation; cache entries store the generation they were written with, so a stale entry is detected on lookup and rasterized again
+- A page drawn from in the current frame is never evicted (that would corrupt quads already emitted): a frame that needs more than the budget grows the atlas past it instead
 
 **GPU memory budget** (defaults, configurable):
 
@@ -575,8 +577,9 @@ wgpu-native reports a loss only when an operation on the lost device fails, and 
 **Debug tools**:
 
 - All wgpu objects are labeled, so when capturing a frame with Xcode's GPU frame capture (macOS) or RenderDoc (Linux) you can see what each draw call is drawing
-- `MYOD_DEBUG_RENDER=1`: shows the draw call count, instance count, atlas page count and per-frame time in a corner
-- `MYOD_DEBUG_ATLAS=1`: draws the atlases on screen, to see which glyphs are loaded and which page was evicted
+- `MYOD_DEBUG_RENDER=1`: shows the draw call count, instance count, atlas pages and evictions, and per-frame time in a corner (`devtools/`)
+- `MYOD_DEBUG_ATLAS=1`: draws the atlas pages on screen, to see which glyphs are loaded and which page was evicted
+- `--dump <prefix>` on the M2 examples writes offscreen captures (both themes, 1x and 2x) as raw RGBA; `tools/rgba2png.py in.rgba out.png [x y w h zoom]` turns them into PNGs, optionally cropped and enlarged
 
 ---
 
@@ -588,6 +591,12 @@ wgpu-native reports a loss only when an operation on the lost device fails, and 
 - **No in-between colors**: every pixel is a color the page can produce (tokens, plus disabled composites). Any other color means an edge was blended, i.e. it is blurry
 - **Uniform hairlines**: every separator has the expected physical thickness. Without anti-aliasing, a missing pixel snap does not create in-between colors, it creates lines that are 1px in one place and 2px in another, so thickness is checked directly
 - **Device loss**: destroy the device, detect the loss, recover, and render correctly again
+
+The M2 examples follow the same pattern (`devtools/demo` holds the shared window, capture and `--dump` scaffolding):
+
+- `02_text`: the 2:1 grid at every scale and size, wrapping, uppercasing and letter spacing, features and variation axes, fallback, color emoji, unbroken underlines, and identical rendering after atlas pages were evicted (with a tiny 256² atlas). Runs on both text backends
+- `02_sprites`: grids of ┼ have unbroken lines across cells and line boxes at every scale
+- `02_icons`: every Phosphor weight at 12 / 16 / 20 / 24px draws inside its box, duotone shows both colors, inline icons stay inside the line box
 
 
 Modeled on React Testing Library: **test the way users actually use the app**. The ghost rendering pipeline is itself a test environment that needs no window: input, messages, view and layout need no GPU; only the final present does.
@@ -614,11 +623,11 @@ testing.expect(tt, ui.test_find(&t, role = .Checkbox, name = "买牛奶") != nil
 platform/  windows, events, DPI, system theme (built on SDL3); calls the redraw callback directly while a window edge is dragged
 core/      widget IDs, input state, per-ID persistent state storage, frame loop, layers
 atlas/     two atlases: R8 (glyphs, icons) and RGBA (emoji, multicolor SVG); packing, paging, whole-page eviction
-text/      font loading, measurement, line wrapping, glyph rasterization (both layout and rendering depend on it)
-text/backend/  text backends for the three platforms: CoreText; Fontconfig + FreeType + HarfBuzz; FreeType + HarfBuzz
+text/      font loading, measurement, line wrapping, glyph and icon rasterization into the atlases (both layout and rendering depend on it);
+           backend_coretext.odin and backend_freetype.odin (FreeType + HarfBuzz, with Fontconfig on Linux), picked at compile time
 sprite/    sprite glyphs: box drawing, blocks, braille, Powerline, Spinner
-svg/       nanosvg binding, SVG rasterization, splitting by layer
-icons/     Phosphor icon name table and embedding
+icons/     the Icon type (an SVG per weight); icons/phosphor is the generated Phosphor name table, embedding SVGs with #load
+devtools/  debug overlays (MYOD_DEBUG_RENDER, MYOD_DEBUG_ATLAS); devtools/demo is the shared scaffolding of the examples
 layout/    Odin binding for Taffy; fills a flat node array each frame and reads back the layout results
 ffi/taffy/ Rust wrapper: implements Taffy's layout tree traits on the node array passed from Odin, exports a C ABI
 render/    Draw_Command definitions, plain data, no dependency on any GPU code
@@ -626,9 +635,11 @@ backend/   wgpu implementation: consumes Draw_Command and submits to the GPU
 widgets/   official component library (aligned with the shadcn/ui component set)
 chart/     charts: build nanosvg shapes, rasterize into textures, cache by data version and size
 testing/   test tools: test_harness, finding by role and name, simulated input
-third_party/  prebuilt third-party static libraries, Nix build recipes, reproducibility checks
+third_party/  prebuilt third-party static libraries, Nix build recipes, reproducibility checks, Odin bindings
+           (third_party/odin), the C shims for FreeType and nanosvg (third_party/shim), fonts and Phosphor
+tools/     developer scripts (rgba2png.py for --dump captures)
 examples/  one runnable demo per milestone, plus three API examples: counter, todomvc, download
 ```
 
-Dependency direction: `widgets → core → layout → text`, `layout → ffi/taffy`, `chart → svg`, `text → atlas`, `icons → svg → atlas`, `core → render`, `backend → render + atlas`.
+Dependency direction: `widgets → core → layout → text`, `layout → ffi/taffy`, `chart → nanosvg (third_party/shim)`, `text → atlas`, `icons/phosphor → icons`, `text → icons + sprite`, `core → render`, `backend → render + atlas`.
 `render/` must not depend on `backend/`.

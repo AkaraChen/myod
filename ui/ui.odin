@@ -3,6 +3,8 @@
 package ui
 import "base:intrinsics"
 
+import "../icons"
+
 // ---- Windows and the frame loop ----
 Window_Options :: struct { title: string, size: [2]int }
 Window :: struct { _: rawptr }
@@ -34,8 +36,7 @@ Inbox :: struct($T: typeid) { _: rawptr }
 wake :: proc(w: ^Window) {}
 
 // ---- Layout ----
-Icon_Weight :: enum { Thin, Light, Regular, Bold, Fill, Duotone }
-Icon :: struct { name: string, svg: [Icon_Weight]string }
+Icon :: icons.Icon
 Size_Kind :: enum { Fit, Grow, Fixed }
 Size :: struct { kind: Size_Kind, value, min, max: f32 }
 grow :: proc(min: f32 = 0, max: f32 = max(f32)) -> Size { return {kind = .Grow, min = min, max = max} }

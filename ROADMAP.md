@@ -85,7 +85,7 @@ Each milestone uses **a runnable demo** as its acceptance criterion, placed unde
 - [x] **Choose the surface format per platform**: non-`*Srgb` on macOS (gamma-space blending), `*Srgb` on Linux (linear-space blending)
 - [x] **Semi-transparent tokens pre-resolved to opaque colors**: `theme/` resolves every token over bg and over bg-solid
 - [x] Label all wgpu objects
-- [ ] `MYOD_DEBUG_RENDER=1` debug overlay: needs text, moved to M2. Until then, `01_rects` shows the render stats in the window title
+- [x] `MYOD_DEBUG_RENDER=1` debug overlay: needed text, so it landed in M2 (`devtools/`)
 - [x] Implement clipping with scissor rects
 - [x] Split batches when the clip changes
 - [x] Allocate the command array each frame with Odin's `context.temp_allocator`
@@ -109,8 +109,8 @@ Each milestone uses **a runnable demo** as its acceptance criterion, placed unde
 This is the hardest part. The earlier it starts, the better.
 
 - [ ] **Text backends** (per the table in ARCHITECTURE.md, “Technology choices”, following Ghostty):
-  - [x] macOS: CoreText (via Odin's `core:sys/darwin/CoreText`), handling font loading, shaping, rasterization and fallback (`text/backend_darwin.odin`). System font discovery by name is still to do
-  - [ ] Linux: Fontconfig + FreeType + HarfBuzz. FreeType + HarfBuzz done (`text/backend_freetype.odin`, also selectable on macOS with `-define:MYOD_TEXT_BACKEND=freetype`); FreeType goes through a small C shim (`third_party/shim/myod_ft.c`) so Odin never mirrors FreeType's structs. Fontconfig discovery and fallback still to do
+  - [x] macOS: CoreText (via Odin's `core:sys/darwin/CoreText`), handling font loading, shaping, rasterization and fallback (`text/backend_coretext.odin`). System font discovery by name is still to do
+  - [ ] Linux: Fontconfig + FreeType + HarfBuzz. FreeType + HarfBuzz done (`text/backend_freetype.odin`, also selectable on macOS with `-define:MYOD_TEXT_BACKEND=freetype`); FreeType goes through a small C shim (`third_party/shim/myod_ft.c`) so Odin never mirrors FreeType's structs. Fontconfig fallback lookup is written (`third_party/odin/fontconfig`, system `libfontconfig`) and type-checks for linux_amd64 / linux_arm64, but has not run on Linux yet
   - [x] The backends expose the same interface to the layer above (`text/backend.odin` picks one at compile time): font loading, faces, shaping, rasterization, metrics
   - [x] FreeType load flags: hinting + auto-hinter + light
 - [ ] **DWG**:
@@ -119,33 +119,34 @@ This is the hardest part. The earlier it starts, the better.
   - [ ] Fast measurement on the 2:1 grid: programming ligatures do not change character width, so width is computed directly as “half-width count × 0.5em + full-width count × 1em”, with no shaping
 - [x] **Font features**: OpenType features (`calt`, `liga`, `ss01`–`ss20`, `cv01`…, `zero`, `frac`…) and variable font axes (`wght`, `wdth`…), configured per style (`Style.features`, `Style.variations`, CSS-like strings) on both backends; `text.load_font` for fonts other than DWG
 - [x] **Shaping cache**: cache shaping results by `(string, face)`, evicting entries unused for 120 frames; features and variation axes join the key when they land. Immediate mode redeclares all text every frame; without a cache, Data Table cannot keep up
-- [ ] **Font fallback**: CoreText's own fallback on macOS; on FreeType, grapheme-cluster itemization over a fallback chain (built in for macOS: Apple Color Emoji, Arial Unicode, LastResort; Fontconfig on Linux still to do). Characters outside DWG (Chinese characters outside the Level 1 and Level 2 sets, emoji, other scripts) go through system fallback: CoreText's fallback list, Fontconfig. Fallback glyphs are vertically centered in the line box; line height uses the primary font's metrics
+- [ ] **Font fallback**: CoreText's own fallback on macOS; on FreeType, grapheme-cluster itemization over a fallback chain (built in for macOS: Apple Color Emoji, Arial Unicode, LastResort; Fontconfig on Linux written, untested). Characters outside DWG (Chinese characters outside the Level 1 and Level 2 sets, emoji, other scripts) go through system fallback: CoreText's fallback list, Fontconfig. Fallback glyphs are vertically centered in the line box; line height uses the primary font's metrics
 - [x] **Color glyphs**: Apple Color Emoji through CoreText and through FreeType (libpng; fixed bitmap strikes scaled to size); drawn in color mode. Noto Color Emoji (CBDT) is the same FreeType path, to be checked on Linux
-- [ ] **Sprite glyphs** (`sprite/`): box drawing (U+2500–257F), block elements (U+2580–259F), Braille patterns (U+2800–28FF), Powerline separators. Drawn directly with rectangles, with no gaps between adjacent cells. Spinner also uses this module
+- [x] **Sprite glyphs** (`sprite/`): box drawing (U+2500–257F, including double / heavy / mixed joins, dashes, arcs and diagonals), block elements (U+2580–259F), Braille patterns (U+2800–28FF), Powerline separators (U+E0B0–E0B7). Rasterized per cell (the glyph's advance × the line box, so cells join with no gaps in either direction), curves 4×4 supersampled; line thickness is 1/16 em in whole pixels. Spinner will reuse this module (M6)
 - [ ] **Alpha blending for text**: native on macOS; on Linux, correct coverage with `linear-corrected`
-- [ ] Text styles: size, weight, color, letter spacing, uppercase transform (Latin letters only) done; underline still to do
+- [x] Text styles: size, weight, color, letter spacing, uppercase transform (Latin letters only), underline (one hairline under the whole run, 1/16 em thick)
 - [ ] **Dynamic atlas** (`atlas/`):
-  - [x] shelf packing (`atlas/`), with dirty-region uploads; single page for now
-  - [ ] Cache key: `(source, id, size_px, subpixel_x)`; the source can be a glyph or an SVG; `subpixel_x` is always 0 for SVG
-  - [ ] Grows by page; when full, evict the least recently used page as a whole; respect the GPU memory budget
-  - [ ] `MYOD_DEBUG_ATLAS=1`: draw the atlas on screen
-- [ ] `MYOD_DEBUG_RENDER=1` debug overlay (moved from M1, now that text exists): draw calls, instances, atlas pages, frame time
+  - [x] shelf packing (`atlas/`), with per-page dirty-region uploads; the GPU side is a texture array, one layer per page
+  - [x] Cache keys: glyphs by `(face, glyph, subpixel bin)` (sprites add the cell size), icons by `(name, weight, layer, size_px)`; entries remember their page's generation and re-rasterize when it was evicted
+  - [x] Grows by page up to the budget (4 mask pages, 2 color pages at 2048²); when full, evicts the least recently used page as a whole. A single frame that needs more than the budget grows past it instead of evicting a page it already drew from. `02_text --selftest` checks both with a tiny 256² atlas
+  - [x] `MYOD_DEBUG_ATLAS=1`: draw the atlas pages on screen
+- [x] `MYOD_DEBUG_RENDER=1` debug overlay (moved from M1, now that text exists): draw calls, instances, atlas pages and evictions, frame time
 - [x] Add `Cmd_Glyph_Run`; the backend draws glyph quads with the same instanced pipeline (sampling the atlas texture). Glyphs land on whole physical pixels with 4 horizontal subpixel bins
-- [ ] **SVG icons** (`svg/`, `icons/`):
-  - [ ] Write Odin bindings for nanosvg (parsing + rasterization)
-  - [ ] Replace `currentColor` with white before parsing, and draw the rasterized result in mask mode so it follows the text color
-  - [ ] Split by layer: the two layers of duotone are rasterized into two atlas entries, and the two layers can use different colors
-  - [ ] Multi-color SVGs (with hard-coded colors) are drawn in color mode
-  - [ ] Rasterize at an integer physical pixel size of `round(size × scale)`, and align the draw position to integer physical pixels too
-  - [ ] An icon can be an element in a text run, taking part in measurement and wrapping, vertically centered in the line box
-  - [ ] `icons/` provides name constants for Phosphor icons and uses `#load` to embed only the SVGs actually used
-  - [ ] Support six weights: thin, light, regular, bold, fill, duotone
+- [ ] **SVG icons** (`icons/`, nanosvg through `third_party/shim/myod_svg.c`):
+  - [x] Bindings for nanosvg (parsing + rasterization), behind a one-function C shim
+  - [x] Shapes are rasterized opaque white in mask mode, so the icon follows the text color (no `currentColor` substitution needed)
+  - [x] Split by layer: the two layers of duotone are rasterized into two atlas entries, and the two layers can use different colors (`text.draw_icon(..., secondary)`; the default is the color at 20%)
+  - [ ] Multi-color SVGs (with hard-coded colors) are drawn in color mode. Not needed for Phosphor; comes with the first multi-color asset
+  - [x] Rasterize at an integer physical pixel size of `round(size × scale)`, and align the draw position to integer physical pixels too
+  - [ ] An icon can be an element in a text run, taking part in measurement and wrapping, vertically centered in the line box. Single lines done (`text.Item`, `measure_items`, `draw_items`); wrapping comes with the layout work
+  - [x] `icons/phosphor` provides name constants for all 1,248 Phosphor icons (generated by `third_party/scripts/gen_phosphor.py`) and uses `#load`, so only the SVGs actually used end up in the binary
+  - [x] Support six weights: thin, light, regular, bold, fill, duotone
 - [x] Text measurement API: `measure(text, style) -> [2]f32` (single line for now; wrapping comes with libunibreak)
 - [x] Line breaking and grapheme clusters: libunibreak (UAX #14, UAX #29) built from source; `text.wrap` / `draw_wrapped` / `measure_wrapped`; grapheme clusters drive FreeType's font fallback
 - [x] Uppercase transform and letter spacing apply only to Latin letters, not to Chinese
-- [ ] Rasterize according to the DPI scale factor; after converting the font size to physical pixels, round to the nearest even number so the half-width advance is always an integer number of pixels; the smallest size, 12px, needs a dedicated check on 1x screens
+- [x] Rasterize according to the DPI scale factor; after converting the font size to physical pixels, round to the nearest even number so the half-width advance is always an integer number of pixels; the smallest size, 12px, needs a dedicated check on 1x screens
 
 **Acceptance:**
+- [ ] Steps d–f (2026-11-09, macOS arm64): sprite glyphs, Phosphor icons, atlas paging and eviction, debug overlays, underline. `just test` adds `02_sprites --selftest` (┼ grids unbroken across cells and line boxes, both themes, every scale), `02_icons --selftest` (every weight and size inside its box, duotone in two colors, inline icons inside the line box) and `02_text`'s underline and eviction checks. Awaiting the visual check
 - [x] Step c (2026-11-09, macOS arm64): wrapping, uppercasing and letter spacing; OpenType features and variation axes; FreeType fallback and color emoji. `02_text --selftest` checks all of it on both backends
 - [x] Step b (2026-11-09, macOS arm64): FreeType 2.14.3 + HarfBuzz 14.5.1 built from source with Nix (deterministic); `02_text --selftest` passes on both backends with identical 2:1 grid measurements; `just test` runs both
 - [x] Step a (2026-11-09, macOS arm64): `examples/02_text` renders the DESIGN.md type scale in DWG with mixed Chinese and English, Cascadia ligatures, the 2:1 grid, fallback characters and color emoji; `--selftest` checks the 2:1 grid at every scale and size, fallback, and color emoji; visual check passed

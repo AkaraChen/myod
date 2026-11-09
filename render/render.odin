@@ -42,7 +42,8 @@ Cmd_Clip_Pop :: struct {}
 // One glyph or icon image, already rasterized into an atlas.
 Glyph_Quad :: struct {
 	atlas:  atlas.Kind,
-	texel:  [4]i32, // x, y, w, h in the atlas
+	page:   i32,
+	texel:  [4]i32, // x, y, w, h in the atlas page
 	offset: [2]i32, // top-left relative to the run origin, physical pixels
 }
 
@@ -55,11 +56,20 @@ Cmd_Glyph_Run :: struct {
 	quads:  []Glyph_Quad,
 }
 
+// Debug view: a whole atlas page scaled into `rect` (MYOD_DEBUG_ATLAS).
+Cmd_Atlas_View :: struct {
+	rect:  Rect,
+	atlas: atlas.Kind,
+	page:  i32,
+	color: Color, // multiplies the mask atlas
+}
+
 Draw_Command :: union {
 	Cmd_Rect,
 	Cmd_Clip_Push,
 	Cmd_Clip_Pop,
 	Cmd_Glyph_Run,
+	Cmd_Atlas_View,
 }
 
 // The commands for one frame. Allocate it with context.temp_allocator; it lives for one frame.

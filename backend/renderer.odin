@@ -22,8 +22,8 @@ struct Globals {
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
-@group(0) @binding(1) var mask_atlas: texture_2d<f32>;
-@group(0) @binding(2) var color_atlas: texture_2d<f32>;
+@group(0) @binding(1) var mask_atlas: texture_2d_array<f32>;
+@group(0) @binding(2) var color_atlas: texture_2d_array<f32>;
 @group(0) @binding(3) var atlas_sampler: sampler;
 
 struct Instance {
@@ -33,6 +33,7 @@ struct Instance {
 	@location(3) uv1: vec2<f32>,
 	@location(4) color: vec4<f32>, // already encoded for the target format
 	@location(5) mode: u32,        // 0 = mask atlas, 1 = color atlas
+	@location(6) page: u32,        // atlas page (texture array layer)
 }
 
 struct Varyings {
@@ -40,6 +41,7 @@ struct Varyings {
 	@location(0) uv: vec2<f32>,
 	@location(1) color: vec4<f32>,
 	@location(2) @interpolate(flat) mode: u32,
+	@location(3) @interpolate(flat) page: u32,
 }
 
 @vertex
@@ -56,16 +58,17 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> Varyings {
 	out.uv = mix(inst.uv0, inst.uv1, c);
 	out.color = inst.color;
 	out.mode = inst.mode;
+	out.page = inst.page;
 	return out;
 }
 
 @fragment
 fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 	if (in.mode == 0u) {
-		let coverage = textureSampleLevel(mask_atlas, atlas_sampler, in.uv, 0.0).r;
+		let coverage = textureSampleLevel(mask_atlas, atlas_sampler, in.uv, in.page, 0.0).r;
 		return vec4<f32>(in.color.rgb, in.color.a * coverage);
 	}
-	let t = textureSampleLevel(color_atlas, atlas_sampler, in.uv, 0.0);
+	let t = textureSampleLevel(color_atlas, atlas_sampler, in.uv, in.page, 0.0);
 	return vec4<f32>(t.rgb, t.a * in.color.a);
 }
 `
@@ -83,7 +86,8 @@ Instance :: struct {
 	uv1:   [2]f32,
 	color: [4]f32,
 	mode:  Instance_Mode,
-	_:     [3]u32,
+	page:  u32,
+	_:     [2]u32,
 }
 
 @(private)
@@ -117,12 +121,13 @@ Renderer :: struct {
 	stats:           Render_Stats,
 }
 
-// The GPU copy of one CPU atlas.
+// The GPU copy of one CPU atlas: a texture array with one layer per page.
 @(private)
 Gpu_Atlas :: struct {
 	texture: wgpu.Texture,
 	view:    wgpu.TextureView,
 	size:    i32,
+	pages:   int,
 	source:  ^atlas.Atlas,
 }
 
@@ -142,6 +147,7 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 		{format = .Float32x2, offset = u64(offset_of(Instance, uv1)), shaderLocation = 3},
 		{format = .Float32x4, offset = u64(offset_of(Instance, color)), shaderLocation = 4},
 		{format = .Uint32, offset = u64(offset_of(Instance, mode)), shaderLocation = 5},
+		{format = .Uint32, offset = u64(offset_of(Instance, page)), shaderLocation = 6},
 	}
 	blend := wgpu.BlendState {
 		color = {operation = .Add, srcFactor = .SrcAlpha, dstFactor = .OneMinusSrcAlpha},
@@ -175,8 +181,8 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 
 	r.uniforms = wgpu.DeviceCreateBuffer(gpu.device, &{label = "myod globals", usage = {.Uniform, .CopyDst}, size = 16})
 
-	atlas.init(&r.fallback[.Mask], .Mask, FALLBACK_ATLAS_SIZE)
-	atlas.init(&r.fallback[.Color], .Color, FALLBACK_ATLAS_SIZE)
+	atlas.init(&r.fallback[.Mask], .Mask, FALLBACK_ATLAS_SIZE, 1)
+	atlas.init(&r.fallback[.Color], .Color, FALLBACK_ATLAS_SIZE, 1)
 
 	r.sampler = wgpu.DeviceCreateSampler(
 		gpu.device,
@@ -199,14 +205,14 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 }
 
 // Makes the GPU atlases match the given CPU atlases (or the renderer's fallback atlases):
-// recreates a texture when its source or size changed, then uploads the dirty region.
+// recreates a texture when its source, size or page count changed, then uploads dirty regions.
 @(private)
 sync_atlases :: proc(gpu: Gpu, r: ^Renderer, atlases: ^[atlas.Kind]atlas.Atlas) {
 	rebind := r.bind_group == nil
 	for kind in atlas.Kind {
 		src := &atlases[kind] if atlases != nil else &r.fallback[kind]
 		t := &r.textures[kind]
-		if t.source != src || t.size != src.size {
+		if t.source != src || t.size != src.size || t.pages != len(src.pages) {
 			if t.texture != nil {
 				wgpu.TextureViewRelease(t.view)
 				wgpu.TextureRelease(t.texture)
@@ -217,25 +223,31 @@ sync_atlases :: proc(gpu: Gpu, r: ^Renderer, atlases: ^[atlas.Kind]atlas.Atlas) 
 					label = "myod mask atlas" if kind == .Mask else "myod color atlas",
 					usage = {.TextureBinding, .CopyDst},
 					dimension = ._2D,
-					size = {u32(src.size), u32(src.size), 1},
+					size = {u32(src.size), u32(src.size), u32(len(src.pages))},
 					format = .R8Unorm if kind == .Mask else .RGBA8Unorm,
 					mipLevelCount = 1,
 					sampleCount = 1,
 				},
 			)
-			t.view = wgpu.TextureCreateView(t.texture, nil)
+			t.view = wgpu.TextureCreateView(t.texture, &{dimension = ._2DArray, arrayLayerCount = u32(len(src.pages)), mipLevelCount = 1, aspect = .All})
 			t.size = src.size
+			t.pages = len(src.pages)
 			t.source = src
 			atlas.mark_all_dirty(src)
 			rebind = true
 		}
-		if d, ok := atlas.take_dirty(src); ok {
+		for page in 0 ..< len(src.pages) {
+			d, ok := atlas.take_dirty(src, page)
+			if !ok {
+				continue
+			}
+			pixels := src.pages[page].pixels
 			offset := int((d.y * src.size + d.x) * src.bpp)
 			wgpu.QueueWriteTexture(
 				gpu.queue,
-				&{texture = t.texture, origin = {u32(d.x), u32(d.y), 0}, aspect = .All},
-				&src.pixels[offset],
-				uint(len(src.pixels)) - uint(offset),
+				&{texture = t.texture, origin = {u32(d.x), u32(d.y), u32(page)}, aspect = .All},
+				&pixels[offset],
+				uint(len(pixels)) - uint(offset),
 				&{bytesPerRow = u32(src.size * src.bpp), rowsPerImage = u32(d.w - d.y)},
 				&{u32(d.z - d.x), u32(d.w - d.y), 1},
 			)
@@ -390,6 +402,20 @@ build_instances :: proc(r: ^Renderer, list: render.Command_List, size: [2]u32, s
 				continue
 			}
 			push_glyph_run(r, c, scale)
+		case render.Cmd_Atlas_View:
+			if clip.z <= clip.x || clip.w <= clip.y {
+				continue
+			}
+			x0, y0, x1, y1 := snap(c.rect, scale)
+			append(&r.instances, Instance {
+				pos = {x0, y0},
+				size = {x1 - x0, y1 - y0},
+				uv0 = {0, 0},
+				uv1 = {1, 1},
+				color = encode(r^, c.color),
+				mode = .Mask if c.atlas == .Mask else .Color,
+				page = u32(c.page),
+			})
 		}
 	}
 	r.batches[len(r.batches) - 1].count = u32(len(r.instances)) - r.batches[len(r.batches) - 1].first
@@ -488,6 +514,7 @@ push_glyph_run :: proc(r: ^Renderer, c: render.Cmd_Glyph_Run, scale: f32) {
 			uv1 = {(x + w) * inv, (y + h) * inv},
 			color = color,
 			mode = .Mask if q.atlas == .Mask else .Color,
+			page = u32(q.page),
 		})
 	}
 }

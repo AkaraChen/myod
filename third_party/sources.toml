@@ -70,3 +70,17 @@ version = "1.6.59"
 build = "source"
 url = "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.xz"
 hash = "sha256-2A3So4o3+APLm2rHsUvW503cO2VHgKg4C9+TUj/bQ4k="
+
+[nanosvg]
+version = "239e102ec2c691f2902e20ace2ed36ee4a35cfe6"
+build = "source"
+# No releases; pinned to a commit. The hash is of the unpacked tree (fetchzip). zlib license.
+url = "https://github.com/memononen/nanosvg/archive/239e102ec2c691f2902e20ace2ed36ee4a35cfe6.tar.gz"
+hash = "sha256-Vc0cehgA39WSXFEekVva+0gEARz7QTFc1nK85IQf1KI="
+
+[phosphor]
+version = "2.0.8"
+build = "upstream-release"
+# Copied into third_party/phosphor/<weight>/. The hash is of the unpacked tree. MIT license.
+url = "https://github.com/phosphor-icons/core/archive/refs/tags/v2.0.8.tar.gz"
+hash = "sha256-ayUXzJmMg8xw9IZ1QGVWcp/FpHktDZmqKGnVLORa88Y="

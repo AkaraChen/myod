@@ -35,6 +35,10 @@ test:
     ./build/02_text --selftest
     odin build examples/02_text {{odin_flags}} -define:MYOD_TEXT_BACKEND=freetype -out:build/02_text_freetype
     ./build/02_text_freetype --selftest
+    odin build examples/02_sprites {{odin_flags}} -out:build/02_sprites
+    ./build/02_sprites --selftest
+    odin build examples/02_icons {{odin_flags}} -out:build/02_icons
+    ./build/02_icons --selftest
 
 # Type-check every example
 check:
@@ -50,6 +54,9 @@ vendor:
     cd third_party && {{nix}} build .#fonts -o ../build/fonts
     rm -rf third_party/fonts && mkdir -p third_party/fonts
     cp build/fonts/* third_party/fonts/ && chmod 644 third_party/fonts/*
+    cd third_party && {{nix}} build .#phosphor -o ../build/phosphor
+    rm -rf third_party/phosphor && cp -r build/phosphor third_party/phosphor && chmod -R u+w third_party/phosphor
+    python3 -I third_party/scripts/gen_phosphor.py third_party/phosphor icons/phosphor/phosphor.odin
 
 # Check that the committed static libraries are byte-for-byte identical to the Nix build
 verify:
@@ -58,7 +65,9 @@ verify:
     cd third_party/prebuilt/{{platform}} && shasum -a 256 -c SHA256SUMS
     cd third_party && {{nix}} build .#fonts -o ../build/fonts
     diff -r build/fonts third_party/fonts
-    @echo "third_party/prebuilt/{{platform}} and third_party/fonts are byte-for-byte identical to the Nix build"
+    cd third_party && {{nix}} build .#phosphor -o ../build/phosphor
+    diff -r build/phosphor third_party/phosphor
+    @echo "third_party/prebuilt/{{platform}}, fonts and phosphor are byte-for-byte identical to the Nix build"
 
 # Force a rebuild to confirm the build itself is deterministic
 verify-rebuild:
