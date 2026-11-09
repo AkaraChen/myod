@@ -15,6 +15,9 @@ V_State :: struct {
 	version:  u64,
 	row_h:    f32, // 0: rows are measured from their content
 	estimate: f32,
+	// The declaration of the last pass, for assertions on the range it chose. Tests that look at
+	// it pass their own storage: the test runner runs tests in parallel, so it cannot be a global.
+	seen: ^Virtual_List,
 }
 
 Jump :: struct {
@@ -44,10 +47,6 @@ v_row_height :: proc(index: int) -> f32 {
 	return 20 if index % 2 == 0 else 60
 }
 
-// The declaration of the last pass, for assertions on the range it chose.
-@(private)
-g_vlist: Virtual_List
-
 v_view :: proc(s: V_State, d: Dispatch(V_Msg)) {
 	if column({padding = 10, width = grow(), height = grow()}) {
 		if l := virtual_list({
@@ -60,7 +59,9 @@ v_view :: proc(s: V_State, d: Dispatch(V_Msg)) {
 			width = grow(),
 			height = grow(),
 		}); l.open {
-			g_vlist = l
+			if s.seen != nil {
+				s.seen^ = l
+			}
 			for i in l.first ..< l.last {
 				if virtual_item(l, i) {
 					// A fixed-size box makes the row's height exact.
@@ -146,7 +147,8 @@ virtual_list_declares_only_the_rows_in_view :: proc(t: ^testing.T) {
 
 @(test)
 virtual_list_scrolls_with_the_wheel :: proc(t: ^testing.T) {
-	h := test_harness(V_State{count = 10_000, row_h = 28}, v_update, v_view)
+	seen: Virtual_List
+	h := test_harness(V_State{count = 10_000, row_h = 28, seen = &seen}, v_update, v_view)
 	defer test_destroy(h)
 
 	list, _ := v_list(h)
@@ -156,7 +158,7 @@ virtual_list_scrolls_with_the_wheel :: proc(t: ^testing.T) {
 
 	// 140px is exactly five rows.
 	testing.expectf(t, math.abs(v_scroll(h, list.id) - 140) < 1, "offset %v", v_scroll(h, list.id))
-	testing.expect_value(t, g_vlist.visible_first, 5)
+	testing.expect_value(t, seen.visible_first, 5)
 	row, found := v_row(h, 5)
 	testing.expect(t, found, "row 5 is declared")
 	testing.expectf(t, math.abs(row.rect.y - list.rect.y) < 1, "row 5 sits at the top")
@@ -247,10 +249,7 @@ virtual_list_sticks_to_the_bottom_when_rows_are_appended :: proc(t: ^testing.T) 
 	testing.expectf(
 		t,
 		found,
-		"the appended rows are declared: count %d, declaring %d..%d, offset %v of %v",
-		g_vlist.count,
-		g_vlist.first,
-		g_vlist.last,
+		"the appended rows are declared, offset %v of %v",
 		v_scroll(h, list.id),
 		max.y,
 	)
@@ -315,10 +314,9 @@ virtual_cum_uses_measured_heights_and_estimates :: proc(t: ^testing.T) {
 
 // ---- Tables ----
 
-@(private)
-g_grid: Virtual_Grid
-
-G_State :: struct{}
+G_State :: struct {
+	seen: ^Virtual_Grid,
+}
 
 Ping :: struct{}
 
@@ -330,7 +328,10 @@ g_update :: proc(s: ^G_State, msg: G_Msg, fx: ^Effects(G_Msg)) {}
 
 g_view :: proc(s: G_State, d: Dispatch(G_Msg)) {
 	if column({padding = 10, width = grow(), height = grow()}) {
-		g_grid = g_grid_view()
+		g := g_grid_view()
+		if s.seen != nil {
+			s.seen^ = g
+		}
 	}
 }
 
@@ -407,7 +408,8 @@ virtual_grid_declares_only_the_cells_in_view :: proc(t: ^testing.T) {
 
 @(test)
 virtual_grid_scrolls_on_both_axes :: proc(t: ^testing.T) {
-	h := test_harness(G_State{}, g_update, g_view)
+	seen: Virtual_Grid
+	h := test_harness(G_State{seen = &seen}, g_update, g_view)
 	defer test_destroy(h)
 
 	table, _ := g_table(h)
@@ -416,8 +418,8 @@ virtual_grid_scrolls_on_both_axes :: proc(t: ^testing.T) {
 	test_frame(h)
 
 	table, _ = g_table(h)
-	testing.expect_value(t, g_grid.visible_row_first, 3) // 120 / 40
-	testing.expect_value(t, g_grid.visible_column_first, 4) // 200 / 50
+	testing.expect_value(t, seen.visible_row_first, 3) // 120 / 40
+	testing.expect_value(t, seen.visible_column_first, 4) // 200 / 50
 	cell, found := g_cell(h, 3, 4)
 	testing.expect(t, found, "the cell at the scrolled origin is declared")
 	testing.expect(

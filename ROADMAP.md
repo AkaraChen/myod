@@ -265,31 +265,31 @@ Layout needs something to lay out, so this milestone also builds the declaration
 
 Implemented per DESIGN.md, “Component specs”; all states change color only. **Every component ships with a full accessibility contract** (role, name, state, actions), verified with the test tools:
 
-- [ ] `label`, section heading
-- [ ] `button`: four variants, outline / primary / ghost / danger; three sizes, default, small, and icon-only; can carry a leading icon
-- [ ] `toggle`, `checkbox`, `radio` (square)
-- [ ] `slider`, `progress`
-- [ ] `tag`
-- [ ] `tabs`
-- [ ] List row
-- [ ] **Splitter**: 6px hit area, drag follows 1:1, resizes panel widths
-- [ ] **Scroll container** (implemented per ARCHITECTURE.md, “API design → 15”):
-  - [ ] Clipping + a 6px square scrollbar overlaid on the content, taking no layout width; only the thumb can be dragged
-  - [ ] Scroll latching and per-axis dispatch; first investigate whether SDL3 exposes trackpad gesture phases; if not, use native events on macOS, or approximate with a timeout
-  - [ ] Inertia: system events on macOS and Windows; not done on Linux
-  - [ ] Keyboard scrolling, scrolling focus into view
-  - [ ] The `scroll_to` effect, the `on_end` message
-  - [ ] Scroll anchoring; containers with a `key` keep their scroll position
-  - [ ] sticky: implemented in the positioning phase after layout
-- [ ] **Layer system** (implemented per ARCHITECTURE.md, “API design → 14”): layer stack, Toast layer, Tooltip layer; controlled open state and a unified close message; the input phase dispatches from the top of the stack down, and a click outside does not pass through; pointer capture; Esc, focus trap, focus restoration. Visually separated from lower layers by a 2px border and a bg-solid background, not by shadows
-- [ ] **Popover positioning**: done in the positioning phase after layout; anchored via `anchor` to a node's position in the current frame; flips to the other side when it does not fit, and adjusts automatically against window edges (the equivalent of floating-ui)
-- [ ] `menu` (controlled open state; menu items with icons and submenu arrows), `tooltip` (owned by the library; the hover delay is timed inside the library)
-- [ ] `spinner`: a square Braille dot pattern, drawn with the `sprite/` module, about 10 frames per second, requesting redraws only while visible
-- [ ] `pending`: pending state; `ui.pending_task(s.job, "下载中")` reads the task's recorded start time and most recent activity directly
-- [ ] Disabled state: 36% opacity for the whole widget
-- [ ] Focus ring: 2px fg, 1px offset
-- [ ] Add `Cmd_Image` and image texture management
-- [ ] Theme: all components read only the tokens in `Theme`, with no hard-coded colors or sizes; light and dark sets, following the system by default; can be replaced wholesale by a user-defined theme, but per-widget style overrides are not supported before 1.0
+- [x] `label`, section heading
+- [x] `button`: four variants, outline / primary / ghost / danger; three sizes, default, small, and icon-only; can carry a leading icon
+- [x] `toggle`, `checkbox`, `radio` (square)
+- [x] `slider`, `progress`
+- [x] `tag`
+- [x] `tabs`
+- [x] List row
+- [x] **Splitter**: 6px hit area, drag follows 1:1, resizes panel widths
+- [x] **Scroll container** (implemented per ARCHITECTURE.md, “API design → 15”):
+  - [x] Clipping + a 6px square scrollbar overlaid on the content, taking no layout width; only the thumb can be dragged
+  - [x] Scroll latching and per-axis dispatch; first investigate whether SDL3 exposes trackpad gesture phases; if not, use native events on macOS, or approximate with a timeout
+  - [x] Inertia: system events on macOS and Windows; not done on Linux
+  - [x] Keyboard scrolling, scrolling focus into view
+  - [x] The `scroll_to` effect, the `on_end` message
+  - [x] Scroll anchoring; containers with a `key` keep their scroll position
+  - [x] sticky: implemented in the positioning phase after layout
+- [x] **Layer system** (implemented per ARCHITECTURE.md, “API design → 14”): layer stack, Toast layer, Tooltip layer; controlled open state and a unified close message; the input phase dispatches from the top of the stack down, and a click outside does not pass through; pointer capture; Esc, focus trap, focus restoration. Visually separated from lower layers by a 2px border and a bg-solid background, not by shadows
+- [x] **Popover positioning**: done in the positioning phase after layout; anchored via `anchor` to a node's position in the current frame; flips to the other side when it does not fit, and adjusts automatically against window edges (the equivalent of floating-ui)
+- [x] `menu` (controlled open state; menu items with icons and submenu arrows), `tooltip` (owned by the library; the hover delay is timed inside the library)
+- [x] `spinner`: a square Braille dot pattern, drawn with the `sprite/` module, about 10 frames per second, requesting redraws only while visible
+- [x] `pending`: pending state; `ui.pending_task(s.job, "下载中")` reads the task's recorded start time and most recent activity directly
+- [x] Disabled state: 36% opacity for the whole widget
+- [x] Focus ring: 2px fg, 1px offset
+- [x] Add `Cmd_Image` and image texture management
+- [x] Theme: all components read only the tokens in `Theme`, with no hard-coded colors or sizes; light and dark sets, following the system by default; can be replaced wholesale by a user-defined theme, but per-widget style overrides are not supported before 1.0
 
 **Acceptance:**
 - `examples/06_widgets`: modeled on BR1's “full state matrix”, all states of every widget laid out on one page at once, with switchable light/dark themes

@@ -44,6 +44,9 @@ grow :: proc(min: f32 = 0, max: f32 = 0, weight: f32 = 1) -> Size {
 	return {kind = .Grow, value = weight, min = min, max = max}
 }
 
+// `grow()` as a constant, for default parameters (which Odin requires to be constant).
+GROW :: Size{kind = .Grow, value = 1}
+
 fixed :: proc(v: f32) -> Size {
 	return {kind = .Fixed, value = v}
 }
@@ -89,6 +92,7 @@ Container_Options :: struct {
 	fill:                  Fill,
 	border:                Border,
 	clip:                  bool, // clip the content to the container
+	sticky:                bool, // stays at the top of its scrolling parent (a direct child of `scroll`)
 	column_span, row_span: int, // when the parent is a grid
 }
 
@@ -182,6 +186,31 @@ scroll :: proc(o: Container_Options = {}) -> bool {
 	return open_box(opts, .Column, {.Scroll})
 }
 
+// A bar pinned to the top of the nearest `scroll` container (a Data Table's header). Declare it as a
+// direct child of the scroll container, after the content, so it paints above the rows that scroll
+// under it; reserve its height with the scroll container's top padding.
+@(deferred_out = _close)
+sticky :: proc(o: Container_Options = {}) -> bool {
+	ctx := core.current()
+	ln := layout.Node {
+		position       = 1, // out of the flow: it does not move with the content
+		flex_direction = .Row,
+		align_items    = .Center,
+		padding        = edges(o.padding),
+		gap            = {o.gap, o.gap},
+	}
+	ln.inset[0] = {0, .Px}
+	ln.inset[1] = {0, .Px}
+	ln.inset[2] = {0, .Px}
+	if o.height.kind == .Fixed {
+		ln.size[1] = {o.height.value, .Px}
+	}
+	if o.border != .None {
+		ln.border = 1
+	}
+	return core.open(ctx, key_id(ctx, o.id), ln, box_paint(o.fill, o.border), clip = false, flags = {.Sticky})
+}
+
 @(deferred_out = _close)
 grid :: proc(o: Grid_Options) -> bool {
 	ctx := core.current()
@@ -261,11 +290,25 @@ open_box :: proc(o: Container_Options, dir: layout.Direction, flags: core.Node_F
 	if o.wrap {
 		ln.align_content = .Start
 	}
+	f := flags
+	if o.sticky {
+		f += {.Sticky}
+	}
 	if o.border != .None {
 		ln.border = 1
 	}
 	item(ctx, &ln, o.width, o.height, o.column_span, o.row_span)
-	return core.open(ctx, key_id(ctx, o.id), ln, box_paint(o.fill, o.border), clip = o.clip, flags = flags)
+	if .Scroll in f {
+		// A scroll container does not take its content's size as its automatic minimum, as on the
+		// web: without this it could not shrink below its content and would never scroll.
+		if ln.min_size[0].unit == .Auto {
+			ln.min_size[0] = {0, .Px}
+		}
+		if ln.min_size[1].unit == .Auto {
+			ln.min_size[1] = {0, .Px}
+		}
+	}
+	return core.open(ctx, key_id(ctx, o.id), ln, box_paint(o.fill, o.border), clip = o.clip, flags = f)
 }
 
 // Sets how a node sits in its parent: sizes, flex item properties or grid placement.

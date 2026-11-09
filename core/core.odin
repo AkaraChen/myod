@@ -83,11 +83,28 @@ Paint_Icon :: struct {
 	color:  Token,
 }
 
+// How an image fills its rect.
+Image_Fit :: enum u8 {
+	Stretch, // fill the rect, distorting the aspect ratio
+	Contain, // fit inside, centered, preserving the aspect ratio
+	Cover,  // fill the rect, cropping the overflow, preserving the aspect ratio
+}
+
+// A user image (RGBA8, straight alpha, `w × h`, `w * 4` bytes per row). `version` changes when the
+// pixels do; the backend uploads the image again then.
+Paint_Image :: struct {
+	pixels:  []u8,
+	w, h:    int,
+	version: u64,
+	fit:     Image_Fit,
+}
+
 Paint :: union {
 	Paint_Box,
 	Paint_Text,
 	Paint_Line,
 	Paint_Icon,
+	Paint_Image,
 }
 
 Node_Flag :: enum u8 {
@@ -98,8 +115,13 @@ Node_Flag :: enum u8 {
 	Activate, // Space and Enter click it while focused
 	Disabled, // drawn at the theme's disabled opacity, with everything inside; takes no input
 	Scroll, // a scroll container: wheel, keys and focus scroll its content (scroll.odin)
+	Layer, // the root of a layer: laid out in place, but positioned and drawn on top
+	Modal, // a layer that blocks input below it
+	Menu, // a layer whose items arrows move through
+	Sticky, // stays at the top of the nearest scrolling ancestor (positioning phase)
+	Adjust, // the widget uses the arrow keys itself (a slider, a splitter)
 }
-Node_Flags :: bit_set[Node_Flag;u8]
+Node_Flags :: bit_set[Node_Flag;u16]
 
 Node :: struct {
 	id:           Id,
@@ -140,6 +162,16 @@ Slot :: struct {
 	scroll_view:     [2]f32, // the viewport (the container's own size) from the last layout
 	scroll_content:  [2]f32, // content extent, when the node knows it itself
 	scroll_override: bool, // use `scroll_content` instead of Taffy's scrollable overflow
+	// Scroll anchoring (core/scroll.odin): the first visible direct child of the container and its
+	// top in content coordinates, from the last pass. When the content above it changes height, the
+	// offset moves with it, so what is on screen stays put.
+	anchor_id:    Id,
+	anchor_y:     f32,
+	anchor_valid: bool,
+	scroll_shown: [2]f32, // the offset presented last pass, to tell the user's moves from a reflow
+	// The scrollbar thumbs of a scroll container, in root coordinates, from the last layout. A zero
+	// rect means that axis does not scroll.
+	bar:             [2]Rect,
 	// Position in a list or table for assistive technology; -1 where not set (a11y.odin).
 	row_count:    i32,
 	row_index:    i32,
@@ -178,6 +210,7 @@ Context :: struct {
 	theme:      theme.Theme,
 	scale:      f32,
 	viewport:   Rect, // the visible area, in root coordinates
+	root_bounded: bool, // the root is exactly the window's size, not a page that grows with content
 	frame:      u64,
 	stamp:      u32, // increments every pass
 	trees:      [2]Tree, // this pass and the previous one
@@ -205,6 +238,10 @@ Context :: struct {
 	unsettled: bool,
 	// Scroll requests from effects (`scroll_to_index`), consumed by the list that owns the ID.
 	scroll_requests: map[Id]int,
+	// The layers of the last pass, in opening order: drawn on top of the base content, hit-tested
+	// from the top down (layers.odin).
+	layers:      [dynamic]Layer,
+	layers_prev: [dynamic]Layer, // the last pass's layers, for "was this layer open a frame ago?"
 	size:        [2]f32, // the window's logical size this frame
 	frame_start: time.Tick,
 	pass_start:  time.Tick,
@@ -215,6 +252,24 @@ Context :: struct {
 Read :: struct {
 	id:   Id,
 	size: [2]f32, // zero if the node had no layout yet
+}
+
+// A layer: a subtree declared in place but drawn above the base content, anchored to a rect of the
+// frame that opened it (a popover, menu, dialog). Positioned after layout (layers.odin).
+Layer :: struct {
+	id:     Id,
+	start:  i32, // node range [start, end)
+	end:    i32,
+	opener: Id, // the widget that had focus when the layer opened (focus returns there)
+	modal:  bool,
+	menu:   bool,
+	above:  bool, // place the layer above its anchor instead of below
+	no_input: bool, // tooltips: never take the pointer, never close on clicks or Esc
+	anchor: Rect, // the trigger's rect in root coordinates; zero: centered in the window
+	gap:    f32,
+	align:  f32, // 0 starts at the anchor's left edge, 0.5 centers, 1 ends at its right edge
+	center: bool, // ignore the anchor and center the layer in the window
+	bottom_right: bool, // toasts: the bottom-right corner of the window, ignoring the anchor
 }
 
 @(private, thread_local)
@@ -259,6 +314,10 @@ destroy :: proc(ctx: ^Context) {
 	delete(ctx.warned)
 	delete(ctx.names)
 	delete(ctx.scroll_requests)
+	clear(&ctx.layers)
+	delete(ctx.layers)
+	clear(&ctx.layers_prev)
+	delete(ctx.layers_prev)
 	delete(ctx.a11y)
 	a11y_prev_destroy(ctx)
 	input_destroy(&ctx.input)
@@ -276,8 +335,8 @@ current :: proc(loc := #caller_location) -> ^Context {
 // into `list`. `size` is the logical size of the window; `scroll` offsets the visible area.
 // The frame loop of ui/ drives the same phases one by one (frame_begin, pass_begin, pass_end,
 // frame_end), with the input phase before them.
-frame :: proc(ctx: ^Context, view: View_Proc, data: rawptr, size: [2]f32, scale: f32, t: theme.Theme, list: ^render.Command_List, scroll := [2]f32{}) {
-	outer := frame_begin(ctx, size, scale, t, scroll)
+frame :: proc(ctx: ^Context, view: View_Proc, data: rawptr, size: [2]f32, scale: f32, t: theme.Theme, list: ^render.Command_List, scroll := [2]f32{}, bounded := false) {
+	outer := frame_begin(ctx, size, scale, t, scroll, bounded)
 	for pass in 0 ..< MAX_PASSES {
 		pass_begin(ctx)
 		view(data)
@@ -293,12 +352,13 @@ frame :: proc(ctx: ^Context, view: View_Proc, data: rawptr, size: [2]f32, scale:
 }
 
 // Starts a frame: makes `ctx` current (until frame_end) and returns the context that was current.
-frame_begin :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, scroll := [2]f32{}) -> (outer: ^Context) {
+frame_begin :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, scroll := [2]f32{}, bounded := false) -> (outer: ^Context) {
 	ctx.frame_start = time.tick_now()
 	ctx.frame += 1
 	ctx.theme = t
 	ctx.odin = context
 	ctx.size = size
+	ctx.root_bounded = bounded
 	if scale != ctx.scale {
 		// Text measures differently at another scale: no cached layout is valid any more.
 		for &s in ctx.slots {
@@ -333,7 +393,7 @@ pass_end :: proc(ctx: ^Context) -> bool {
 	end_pass(ctx)
 	t1 := time.tick_now()
 	run_layout(ctx, ctx.size)
-	resolve(ctx)
+	resolve(ctx, true)
 	ctx.stats.layout_time += time.tick_since(t1)
 	ctx.stats.passes += 1
 	a11y_build(ctx)
@@ -377,10 +437,15 @@ relayout :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, list: 
 	ctx.viewport.w, ctx.viewport.h = size.x, size.y
 	root := &tr.lnodes[0]
 	root.size = {{size.x, .Px}, {}}
-	root.min_size = {{}, {size.y, .Px}}
+	root.min_size = {}
+	if ctx.root_bounded {
+		root.size[1] = {size.y, .Px}
+	} else {
+		root.min_size = {{}, {size.y, .Px}}
+	}
 	tr.nodes[0].hash = mix(tr.nodes[0].hash, u64(transmute(u32)size.x) << 32 | u64(transmute(u32)size.y))
 	run_layout(ctx, size)
-	resolve(ctx)
+	resolve(ctx, false) // no anchoring here: it would move the offsets the rects were made with
 	draw(ctx, list)
 }
 
@@ -456,6 +521,13 @@ parent_direction :: proc(ctx: ^Context) -> (dir: layout.Direction, grid: bool) {
 	return ln.flex_direction, ln.display == .Grid
 }
 
+// How many children the open container has declared so far, for widgets that decorate themselves
+// differently when they are not first (menu item dividers).
+child_index :: proc(ctx: ^Context) -> int {
+	t := &ctx.trees[ctx.cur]
+	return int(t.nodes[ctx.stack[len(ctx.stack) - 1]].child_count)
+}
+
 // Opens a container. Returns false when it is culled: its content must not be declared, but
 // `close` must still be called.
 open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid: Grid_Tracks = {}, clip := false, cull := true, label := "", flags: Node_Flags = {}) -> bool {
@@ -467,6 +539,15 @@ open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid
 		n.flags += {.Clip}
 	}
 	a11y_declare(n, label)
+	if .Layer in n.flags {
+		append(&ctx.layers, Layer {
+			id = n.id,
+			start = index,
+			end = index + 1,
+			modal = .Modal in n.flags,
+			menu = .Menu in n.flags,
+		})
+	}
 	append(&ctx.stack, index)
 	append(&ctx.scopes, n.id)
 	s := &ctx.slots[n.slot]
@@ -625,6 +706,15 @@ finish :: proc(ctx: ^Context, index: i32) {
 	t := &ctx.trees[ctx.cur]
 	n := &t.nodes[index]
 	n.end = i32(len(t.nodes))
+	if .Layer in n.flags {
+		// The layer's subtree is complete: its extent is what the draw and hit-test phases skip over.
+		for i := len(ctx.layers) - 1; i >= 0; i -= 1 {
+			if ctx.layers[i].start == index {
+				ctx.layers[i].end = n.end
+				break
+			}
+		}
+	}
 	ln := &t.lnodes[index]
 	ln.first_child = u32(len(t.children))
 	ln.child_count = u32(n.child_count)
@@ -697,6 +787,9 @@ begin_pass :: proc(ctx: ^Context, size: [2]f32) {
 	clear(&ctx.scopes)
 	clear(&ctx.reads)
 	clear(&ctx.names)
+	clear(&ctx.layers_prev)
+	append(&ctx.layers_prev, ..ctx.layers[:])
+	clear(&ctx.layers)
 	for &s in ctx.slots {
 		// A virtual list sets this again while declaring; a list that is no longer declared must
 		// not keep the extent of its last pass.
@@ -709,7 +802,13 @@ begin_pass :: proc(ctx: ^Context, size: [2]f32) {
 	root := layout.Node {
 		flex_direction = .Column,
 		size           = {{size.x, .Px}, {}},
-		min_size       = {{}, {size.y, .Px}},
+	}
+	if ctx.root_bounded {
+		// A window: exactly the window's height, so `grow()` fills it and scroll containers have a
+		// viewport. Offscreen frames leave it auto, so the page can be taller and scrolled as a whole.
+		root.size[1] = {size.y, .Px}
+	} else {
+		root.min_size = {{}, {size.y, .Px}}
 	}
 	append(&ctx.scopes, ROOT_ID)
 	index := add_node(ctx, ROOT_ID, root, nil, {}, "root")
@@ -764,9 +863,10 @@ run_layout :: proc(ctx: ^Context, size: [2]f32) {
 }
 
 // Absolute rects, with edges rounded to physical pixels: rounding absolute edges (not sizes) keeps
-// rounding error from accumulating down the tree.
+// rounding error from accumulating down the tree. `anchor` runs scroll anchoring (see below) — off
+// when the rects are drawn immediately from this call, as in `relayout`.
 @(private)
-resolve :: proc(ctx: ^Context) {
+resolve :: proc(ctx: ^Context, anchor: bool) {
 	t := &ctx.trees[ctx.cur]
 	results := layout.results(ctx.layout)
 	origin := make([][2]f32, len(t.nodes), context.temp_allocator)
@@ -791,10 +891,48 @@ resolve :: proc(ctx: ^Context) {
 	for &n, i in t.nodes {
 		l := results[n.slot]
 		o := [2]f32{l.x, l.y}
-		if n.parent >= 0 {
+		if .Layer in n.flags {
+			// A layer escapes its declaration site: it is drawn and hit-tested on top, anchored to the
+			// widget that opened it (or centered), and kept inside the window.
+			for &layer in ctx.layers {
+				if layer.start == i32(i) {
+					w, h := l.w, l.h
+					x, y: f32
+					if layer.bottom_right {
+						x = ctx.viewport.x + ctx.viewport.w - w - 16
+						y = ctx.viewport.y + ctx.viewport.h - h - 16
+					} else if layer.center || layer.anchor == {} {
+						x = ctx.viewport.x + (ctx.viewport.w - w) / 2
+						y = ctx.viewport.y + (ctx.viewport.h - h) / 2
+					} else {
+						a := layer.anchor
+						x = a.x + (a.w - w) * layer.align
+						if layer.above {
+							y = a.y - layer.gap - h
+							if y < ctx.viewport.y + 8 {
+								y = a.y + a.h + layer.gap // no room above: flip below
+							}
+						} else {
+							y = a.y + a.h + layer.gap
+							if y + h > ctx.viewport.y + ctx.viewport.h - 8 {
+								// Flip above the anchor when there is no room below.
+								y = a.y - layer.gap - h
+							}
+						}
+					}
+					right := ctx.viewport.x + ctx.viewport.w - 8
+					bottom := ctx.viewport.y + ctx.viewport.h - 8
+					x = clamp(x, ctx.viewport.x + 8, max(right - w, ctx.viewport.x + 8))
+					y = clamp(y, ctx.viewport.y + 8, max(bottom - h, ctx.viewport.y + 8))
+					o = {x, y}
+					break
+				}
+			}
+		} else if n.parent >= 0 {
 			o += origin[n.parent]
-			if .Scroll in t.nodes[n.parent].flags {
-				// The parent's content is scrolled: everything inside moves against the offset.
+			if .Scroll in t.nodes[n.parent].flags && .Sticky not_in n.flags {
+				// The parent's content is scrolled: everything inside moves against the offset. A
+				// sticky child stays at the viewport's edge instead.
 				sc := ctx.slots[t.nodes[n.parent].slot].scroll
 				o -= sc
 			}
@@ -810,7 +948,97 @@ resolve :: proc(ctx: ^Context) {
 		slot.has_rect = true
 		slot.seen = ctx.stamp
 		slot.index = i32(i)
+		// Scrollbar thumbs: proportional to the visible part, inset 2px from the container's edges.
+		slot.bar = {}
+		if .Scroll in n.flags {
+			if slot.scroll_max.y > 0 {
+				track := max(n.rect.h - 4, 1)
+				th := clamp(slot.scroll_view.y / (slot.scroll_view.y + slot.scroll_max.y) * track, min(24, track), track)
+				pos := slot.scroll.y / slot.scroll_max.y * (track - th)
+				slot.bar[1] = {n.rect.x + n.rect.w - 8, n.rect.y + 2 + pos, 6, th}
+			}
+			if slot.scroll_max.x > 0 {
+				track := max(n.rect.w - 4, 1)
+				tw := clamp(slot.scroll_view.x / (slot.scroll_view.x + slot.scroll_max.x) * track, min(24, track), track)
+				pos := slot.scroll.x / slot.scroll_max.x * (track - tw)
+				slot.bar[0] = {n.rect.x + 2 + pos, n.rect.y + n.rect.h - 8, tw, 6}
+			}
+		}
 	}
+	if anchor {
+		scroll_anchor(ctx, t, results)
+	}
+}
+
+// Scroll anchoring: keep the content at the top of a scroll container where it is when the content
+// above it changes height (a row above the viewport grew, a wrapped line added a line, an image
+// loaded). The anchor is the first direct child visible on screen; its position in content
+// coordinates is scroll-independent, so a difference from the last pass is exactly how far the
+// content moved. Runs after the rects, which makes the rects stale for the children of a moved
+// container: it asks for one more pass, which is a ghost pass, so nothing is presented twice.
+//
+// Container keys make the anchor and the offset survive structural changes: both live in the slot,
+// and a slot is per ID, not per position.
+@(private)
+scroll_anchor :: proc(ctx: ^Context, t: ^Tree, results: [^]layout.Slot_Layout) {
+	for &n in t.nodes {
+		if .Scroll not_in n.flags {
+			continue
+		}
+		slot := &ctx.slots[n.slot]
+		if .Culled in n.flags || slot.scroll_override {
+			// A virtual list sets its own content extent and does its own anchoring
+			// (ui/virtual.odin): an extent it declared, not a layout, is not something to measure
+			// against.
+			slot.anchor_valid = false
+			slot.scroll_shown = slot.scroll
+			continue
+		}
+		// An offset that changed since the last pass is the user's (wheel, keys, focus, a dragged
+		// thumb) or a clamp: anchoring must not fight it.
+		moved := slot.scroll != slot.scroll_shown
+		if !moved && slot.anchor_valid {
+			if child, ok := child_node(t, &n, slot.anchor_id); ok && .Culled not_in t.nodes[child].flags {
+				// A direct child's layout y is its position in the container's content, unscrolled.
+				delta := results[t.nodes[child].slot].y - slot.anchor_y
+				if math.abs(delta) > 0.5 {
+					before := slot.scroll.y
+					slot.scroll.y = clamp(slot.scroll.y + delta, 0, slot.scroll_max.y)
+					if slot.scroll.y != before {
+						ctx.unsettled = true
+					}
+				}
+			}
+		}
+		// Re-choose the anchor at the final offset. Sticky bars and layers are out of the flow and
+		// never anchor; a direct child counts once any of it is at or below the top edge.
+		slot.anchor_valid = false
+		for c := n.first_child; c >= 0; c = t.nodes[c].next_sibling {
+			cn := &t.nodes[c]
+			if .Culled in cn.flags || .Sticky in cn.flags || .Layer in cn.flags {
+				continue
+			}
+			l := results[cn.slot]
+			if l.y + l.h > slot.scroll.y + 0.5 {
+				slot.anchor_id = cn.id
+				slot.anchor_y = l.y
+				slot.anchor_valid = true
+				break
+			}
+		}
+		slot.scroll_shown = slot.scroll
+	}
+}
+
+// The direct child of `n` with this ID, or -1.
+@(private)
+child_node :: proc(t: ^Tree, n: ^Node, id: Id) -> (index: i32, ok: bool) {
+	for c := n.first_child; c >= 0; c = t.nodes[c].next_sibling {
+		if t.nodes[c].id == id {
+			return c, true
+		}
+	}
+	return -1, false
 }
 
 // Whether this pass can be presented: every size `view` read is still right, and no culled
@@ -899,6 +1127,13 @@ measure_text :: proc "c" (user: rawptr, node: u32, known_w, known_h, avail_w, av
 // ---- Drawing ----
 
 @(private)
+Bar :: struct {
+	end: i32, // drawn when the walk leaves this node's subtree
+	rect: Rect,
+	id:   Id,
+}
+
+@(private)
 draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 	t := &ctx.trees[ctx.cur]
 	n := len(t.nodes)
@@ -910,12 +1145,63 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 	on_solid := make([]bool, n, context.temp_allocator)
 	alpha := make([]f32, n, context.temp_allocator)
 	clips := make([dynamic]i32, 0, 16, context.temp_allocator) // end index of each open clip
-	for i := 0; i < n; i += 1 {
-		for len(clips) > 0 && clips[len(clips) - 1] <= i32(i) {
-			pop(&clips)
+	bars := make([dynamic]Bar, 0, 8, context.temp_allocator)
+	for &node in t.nodes {
+		if .Scroll not_in node.flags {
+			continue
+		}
+		slot := &ctx.slots[node.slot]
+		for axis in 0 ..< 2 {
+			if slot.bar[axis].w <= 0 && slot.bar[axis].h <= 0 {
+				continue
+			}
+			append(&bars, Bar{end = node.end, rect = slot.bar[axis], id = node.id})
+		}
+	}
+	// The base content, then every layer on top of it in opening order (a layer declared inside
+	// another layer is drawn after it, so it is above).
+	draw_range(ctx, list, 0, i32(n), true, scroll, on_solid, alpha, &clips, bars[:])
+	for layer in ctx.layers {
+		// `false`: this pass starts at a layer root, which must be drawn rather than skipped.
+		draw_range(ctx, list, layer.start, layer.end, false, scroll, on_solid, alpha, &clips, bars[:])
+	}
+}
+
+@(private)
+draw_range :: proc(
+	ctx: ^Context,
+	list: ^render.Command_List,
+	from, to: i32,
+	skip_layers: bool,
+	scroll: [2]f32,
+	on_solid: []bool,
+	alpha: []f32,
+	clips: ^[dynamic]i32,
+	bars: []Bar,
+) {
+	t := &ctx.trees[ctx.cur]
+	for i := from; i < to; i += 1 {
+		// A scroll container's thumb is drawn when its subtree ends, before its clip is popped.
+		for bar in bars {
+			if bar.end != i {
+				continue
+			}
+			r := Rect{bar.rect.x - scroll.x, bar.rect.y - scroll.y, bar.rect.w, bar.rect.h}
+			c := color(ctx, .Border_Strong, true)
+			if ctx.input.bar_hot == bar.id || (ctx.input.bar_drag != 0 && ctx.input.bar_drag == bar.id) {
+				c = color(ctx, .Fg, true)
+			}
+			render.fill(list, r, c)
+		}
+		for len(clips) > 0 && clips[len(clips) - 1] <= i {
+			pop(clips)
 			render.clip_pop(list)
 		}
 		node := &t.nodes[i]
+		if skip_layers && .Layer in node.flags {
+			i = node.end - 1
+			continue
+		}
 		solid := on_solid[node.parent] if node.parent >= 0 else false
 		a := alpha[node.parent] if node.parent >= 0 else 1
 		if .Disabled in node.flags {
@@ -924,7 +1210,7 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 		alpha[i] = a
 		visible := intersects(node.rect, ctx.viewport)
 		if !visible && .Clip in node.flags {
-			i = int(node.end) - 1 // nothing inside can show
+			i = node.end - 1 // nothing inside can show
 			continue
 		}
 		r := Rect{node.rect.x - scroll.x, node.rect.y - scroll.y, node.rect.w, node.rect.h}
@@ -939,10 +1225,11 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 		on_solid[i] = solid
 		if .Clip in node.flags {
 			render.clip_push(list, r)
-			append(&clips, node.end)
+			append(clips, node.end)
 		}
 	}
-	for _ in clips {
+	for len(clips) > 0 {
+		pop(clips)
 		render.clip_pop(list)
 	}
 }
@@ -983,6 +1270,36 @@ paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_s
 		render.line(list, line, fade(color(ctx, v.color, on_solid), a))
 	case Paint_Icon:
 		text.draw_icon(list, ctx.text, v.icon, v.weight, {r.x, r.y}, min(r.w, r.h), fade(color(ctx, v.color, on_solid), a), ctx.scale)
+	case Paint_Image:
+		if v.w <= 0 || v.h <= 0 || len(v.pixels) < v.w * v.h * 4 || r.w <= 0 || r.h <= 0 {
+			break
+		}
+		dst := r
+		uv := Rect{0, 0, 1, 1}
+		aspect := f32(v.w) / f32(v.h)
+		rect_aspect := r.w / r.h
+		switch v.fit {
+		case .Stretch:
+		case .Contain:
+			if rect_aspect > aspect {
+				w := r.h * aspect
+				dst = {r.x + (r.w - w) / 2, r.y, w, r.h}
+			} else {
+				h := r.w / aspect
+				dst = {r.x, r.y + (r.h - h) / 2, r.w, h}
+			}
+		case .Cover:
+			if rect_aspect > aspect {
+				// The rect is wider: the image's top and bottom are cropped.
+				f := aspect / rect_aspect
+				uv = {0, (1 - f) / 2, 1, f}
+			} else {
+				f := rect_aspect / aspect
+				uv = {(1 - f) / 2, 0, f, 1}
+			}
+		}
+		key := mix(mix(u64(len(v.pixels)), v.version), u64(uintptr(raw_data(v.pixels))) ~ u64(v.w) << 32 ~ u64(v.h))
+		render.append_image(list, dst, v.pixels, v.w, v.h, v.version, uv, fade({255, 255, 255, 255}, a), key)
 	}
 	return on_solid
 }
@@ -1088,6 +1405,10 @@ hash_paint :: proc "contextless" (h: u64, p: Paint) -> u64 {
 		return mix(mix(mix(h, 3), u64(v.color) | u64(v.vertical) << 8), u64(transmute(u32)v.thickness))
 	case Paint_Icon:
 		return mix(hash_string(mix(h, 4), v.icon.name), u64(v.weight) | u64(v.color) << 8)
+	case Paint_Image:
+		t := mix(mix(h, 5), u64(len(v.pixels)) ~ u64(uintptr(raw_data(v.pixels))))
+		t = mix(t, v.version ~ u64(v.w) << 32 ~ u64(v.h) << 16 ~ u64(v.fit))
+		return t
 	}
 	return h
 }

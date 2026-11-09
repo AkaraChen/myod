@@ -131,6 +131,8 @@ a11y_declare :: proc(n: ^Node, label: string) {
 		}
 	case Paint_Icon:
 		n.role = .Image
+	case Paint_Image:
+		n.role = .Image
 	case Paint_Box, Paint_Line:
 		if label != "" {
 			n.role = .Group

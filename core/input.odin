@@ -24,6 +24,16 @@ Input :: struct {
 	// The container each wheel axis is scrolling, and when its last event arrived (scroll.odin).
 	scroll_latch:      [2]Id,
 	scroll_latch_time: u64,
+	// The scrollbar thumb under the mouse, and the drag in progress (scroll.odin).
+	bar_hot:    Id,
+	bar_drag:   Id,
+	bar_axis:   int,
+	bar_start:  f32, // the pointer's position along the axis when the drag began
+	bar_offset: f32, // the container's offset then
+	bar_scale:  f32, // content pixels per pointer pixel
+	// Esc was pressed, or a click landed outside the top layer (both closed it; layers.odin).
+	escape:        bool,
+	click_outside: bool,
 }
 
 // What happened to one widget since the last consumed pass.
@@ -89,13 +99,24 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		in_.mouse = e.pos
 		in_.mouse_inside = true
 		in_.mods = e.mods
+		if in_.bar_drag != 0 {
+			scroll_bar_move(ctx, pointer(ctx))
+			return true
+		}
 		old := in_.hot
-		in_.hot = hit_test(ctx, pointer(ctx))
+		in_.bar_hot = scroll_bar_at(ctx, pointer(ctx))
+		if in_.bar_hot != 0 {
+			// The area under a thumb takes the pointer first (DESIGN.md, "Scrollbar").
+			in_.hot = 0
+		} else {
+			in_.hot = hit_test(ctx, pointer(ctx))
+		}
 		return in_.hot != old || in_.active != 0
 	case .Mouse_Leave:
 		in_.mouse_inside = false
 		old := in_.hot
-		if in_.active == 0 {
+		in_.bar_hot = 0
+		if in_.active == 0 && in_.bar_drag == 0 {
 			in_.hot = 0
 		}
 		return in_.hot != old
@@ -105,6 +126,21 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		in_.scroll_latch = {}
 		if e.button != .Left {
 			return false
+		}
+		p := pointer(ctx)
+		if scroll_bar_press(ctx, p) {
+			return true
+		}
+		// A click outside the top layer closes it, and does not pass through to what is below.
+		if k := top_input_layer(ctx); k >= 0 {
+			t := &ctx.trees[ctx.cur]
+			top := ctx.layers[k]
+			if !contains(t.nodes[top.start].rect, p) {
+				in_.click_outside = true
+				in_.hot = 0
+				in_.active = 0
+				return true
+			}
 		}
 		in_.hot = hit_test(ctx, pointer(ctx))
 		in_.active = in_.hot
@@ -119,6 +155,11 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 	case .Mouse_Up:
 		in_.mouse = e.pos
 		in_.mods = e.mods
+		if in_.bar_drag != 0 {
+			in_.bar_drag = 0
+			in_.active = 0
+			return true
+		}
 		if e.button != .Left || in_.active == 0 {
 			return in_.active != 0
 		}
@@ -135,6 +176,11 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		return scroll_wheel(ctx, e)
 	case .Key_Down:
 		in_.mods = e.mods
+		if e.key == .Escape && top_input_layer(ctx) >= 0 {
+			// Esc acts only on the topmost layer (ARCHITECTURE.md, "API design → 14").
+			in_.escape = true
+			return true
+		}
 		if e.key == .Tab && e.mods & {.Ctrl, .Alt, .Super} == {} {
 			move_focus(ctx, .Shift in e.mods)
 			if in_.focus != 0 {
@@ -143,9 +189,22 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 			return true
 		}
 		if in_.focus != 0 && (e.key == .Up || e.key == .Down) {
-			// Inside a list, the arrows move the selection; the list scrolls it into view.
+			// A menu's arrows move between its items; inside a list they move the selection.
+			if menu_arrows(ctx, e.key) {
+				return true
+			}
 			if focus_move_in_scroll(ctx, e.key == .Up) {
 				return true
+			}
+		}
+		if in_.focus != 0 {
+			// Widgets that use the arrows themselves (sliders, splitters) get them first.
+			if node, ok := node_of(ctx, in_.focus); ok && .Adjust in node.flags && !e.repeat {
+				#partial switch e.key {
+				case .Left, .Right, .Up, .Down, .Home, .End:
+					append(&in_.keys, e)
+					return true
+				}
 			}
 		}
 		if scroll_key(ctx, e) {
@@ -202,12 +261,25 @@ set_focus :: proc(ctx: ^Context, id: Id, visible: bool) {
 	in_.focus_visible = visible && id != 0
 }
 
-// Tab and Shift+Tab: the next or previous focusable node in document order, wrapping around.
+// Tab and Shift+Tab: the next or previous focusable node in document order. Inside a modal layer they
+// cycle within it (the focus trap).
 move_focus :: proc(ctx: ^Context, backwards: bool) {
+	t := &ctx.trees[ctx.cur]
+	from, to := i32(0), i32(len(t.nodes))
+	if k := top_modal(ctx); k >= 0 {
+		from, to = ctx.layers[k].start, ctx.layers[k].end
+	}
+	move_focus_range(ctx, from, to, backwards, true)
+}
+
+// Moves focus to the next focusable node in [from, to). With `wrap`, cycles; without, stops at the
+// edges and returns false.
+@(private)
+move_focus_range :: proc(ctx: ^Context, from, to: i32, backwards, wrap: bool) -> bool {
 	t := &ctx.trees[ctx.cur]
 	focusable := make([dynamic]Id, 0, 32, context.temp_allocator)
 	current := -1
-	for i := 0; i < len(t.nodes); i += 1 {
+	for i := int(from); i < int(to); i += 1 {
 		n := &t.nodes[i]
 		if is_disabled(t, i32(i)) || .Culled in n.flags {
 			i = int(n.end) - 1
@@ -221,18 +293,37 @@ move_focus :: proc(ctx: ^Context, backwards: bool) {
 		}
 	}
 	if len(focusable) == 0 {
-		return
+		return false
 	}
 	next: int
 	switch {
 	case current < 0:
 		next = len(focusable) - 1 if backwards else 0
 	case backwards:
-		next = (current + len(focusable) - 1) % len(focusable)
+		next = current - 1
+		if next < 0 {
+			if !wrap {
+				return false
+			}
+			next = len(focusable) - 1
+		}
 	case:
-		next = (current + 1) % len(focusable)
+		next = current + 1
+		if next >= len(focusable) {
+			if !wrap {
+				return false
+			}
+			next = 0
+		}
 	}
 	set_focus(ctx, focusable[next], true)
+	return true
+}
+
+// Moves focus inside a layer's range (menu arrows); no wrap.
+@(private)
+move_focus_within :: proc(ctx: ^Context, from, to: i32, backwards: bool) -> bool {
+	return move_focus_range(ctx, from, to, backwards, false)
 }
 
 // Recomputes what is under the mouse against the layout on screen (it may have moved since the
@@ -243,7 +334,8 @@ refresh_hot :: proc(ctx: ^Context) -> bool {
 		return false
 	}
 	old := in_.hot
-	in_.hot = hit_test(ctx, pointer(ctx))
+	in_.bar_hot = scroll_bar_at(ctx, pointer(ctx))
+	in_.hot = 0 if in_.bar_hot != 0 else hit_test(ctx, pointer(ctx))
 	return in_.hot != old
 }
 
@@ -252,6 +344,8 @@ refresh_hot :: proc(ctx: ^Context) -> bool {
 consume :: proc(ctx: ^Context) {
 	clear(&ctx.input.results)
 	clear(&ctx.input.keys)
+	ctx.input.escape = false
+	ctx.input.click_outside = false
 	if ctx.input.focus != 0 {
 		if _, ok := node_of(ctx, ctx.input.focus); !ok {
 			ctx.input.focus = 0
@@ -271,17 +365,60 @@ has_results :: proc(ctx: ^Context) -> bool {
 }
 
 // The topmost node that takes the pointer at `p` (root coordinates), inside every clipping ancestor
-// and not inside a disabled one.
+// and not inside a disabled one. Layers are tested from the top down; a modal layer blocks
+// everything below it (ARCHITECTURE.md, "API design → 14").
 hit_test :: proc(ctx: ^Context, p: [2]f32) -> Id {
+	if len(ctx.layers) > 0 {
+		lowest := top_modal(ctx)
+		for k := len(ctx.layers) - 1; k >= max(lowest, 0); k -= 1 {
+			layer := ctx.layers[k]
+			if id := hit_range(ctx, layer.start, layer.end, p); id != 0 {
+				return id
+			}
+			if layer.modal {
+				return 0
+			}
+		}
+	}
+	return hit_base(ctx, p)
+}
+
+// Hit testing inside one layer's node range.
+@(private)
+hit_range :: proc(ctx: ^Context, from, end: i32, p: [2]f32) -> Id {
+	t := &ctx.trees[ctx.cur]
+	for i := int(end) - 1; i >= int(from); i -= 1 {
+		n := &t.nodes[i]
+		if .Hit not_in n.flags || .Disabled in n.flags || !contains(n.rect, p) {
+			continue
+		}
+		inside := true
+		for a := n.parent; a >= from; a = t.nodes[a].parent {
+			anc := &t.nodes[a]
+			if .Culled in anc.flags || .Disabled in anc.flags || (.Clip in anc.flags && !contains(anc.rect, p)) {
+				inside = false
+				break
+			}
+		}
+		if inside {
+			return n.id
+		}
+	}
+	return 0
+}
+
+// Hit testing the base content, skipping layer subtrees.
+@(private)
+hit_base :: proc(ctx: ^Context, p: [2]f32) -> Id {
 	t := &ctx.trees[ctx.cur]
 	#reverse for &n in t.nodes {
-		if .Hit not_in n.flags || .Disabled in n.flags || !contains(n.rect, p) {
+		if .Layer in n.flags || .Hit not_in n.flags || .Disabled in n.flags || !contains(n.rect, p) {
 			continue
 		}
 		inside := true
 		for a := n.parent; a >= 0; a = t.nodes[a].parent {
 			anc := &t.nodes[a]
-			if .Culled in anc.flags || .Disabled in anc.flags || (.Clip in anc.flags && !contains(anc.rect, p)) {
+			if .Culled in anc.flags || .Disabled in anc.flags || .Layer in anc.flags || (.Clip in anc.flags && !contains(anc.rect, p)) {
 				inside = false
 				break
 			}

@@ -139,6 +139,74 @@ ensure_visible :: proc(ctx: ^Context, id: Id) -> bool {
 	return changed
 }
 
+// ---- Scrollbars (DESIGN.md, "Scrollbar") ----
+
+// The scroll container whose thumb is under `p`, topmost first. The thumb is drawn over the content
+// and takes the pointer before it; only the thumb responds, never the empty track.
+@(private)
+scroll_bar_at :: proc(ctx: ^Context, p: [2]f32) -> Id {
+	t := &ctx.trees[ctx.cur]
+	#reverse for &n in t.nodes {
+		if .Scroll not_in n.flags || .Disabled in n.flags {
+			continue
+		}
+		slot := &ctx.slots[n.slot]
+		for axis in 0 ..< 2 {
+			if slot.bar[axis].w > 0 && contains(slot.bar[axis], p) {
+				return n.id
+			}
+		}
+	}
+	return 0
+}
+
+// Starts dragging the thumb under `p`, 1:1 with the pointer.
+@(private)
+scroll_bar_press :: proc(ctx: ^Context, p: [2]f32) -> bool {
+	id := scroll_bar_at(ctx, p)
+	if id == 0 {
+		return false
+	}
+	slot, ok := ctx.slot_of[id]
+	if !ok {
+		return false
+	}
+	s := &ctx.slots[slot]
+	axis := 0
+	for a in 0 ..< 2 {
+		if s.bar[a].w > 0 && contains(s.bar[a], p) {
+			axis = a
+			break
+		}
+	}
+	thumb := s.bar[axis]
+	span := s.scroll_view[axis] - (thumb.h if axis == 1 else thumb.w)
+	in_ := &ctx.input
+	in_.bar_drag = id
+	in_.bar_axis = axis
+	in_.bar_start = p[axis]
+	in_.bar_offset = s.scroll[axis]
+	in_.bar_scale = s.scroll_max[axis] / max(span, 1)
+	in_.bar_hot = id
+	in_.active = 0
+	in_.hot = 0
+	return true
+}
+
+// Moves the dragged container with the pointer.
+@(private)
+scroll_bar_move :: proc(ctx: ^Context, p: [2]f32) {
+	in_ := &ctx.input
+	slot, ok := ctx.slot_of[in_.bar_drag]
+	if !ok {
+		in_.bar_drag = 0
+		return
+	}
+	s := &ctx.slots[slot]
+	axis := in_.bar_axis
+	s.scroll[axis] = clamp(in_.bar_offset + (p[axis] - in_.bar_start) * in_.bar_scale, 0, s.scroll_max[axis])
+}
+
 // ---- The wheel ----
 
 @(private)
@@ -170,9 +238,13 @@ can_scroll :: proc(ctx: ^Context, id: Id, axis: int, want: f32) -> bool {
 @(private)
 scroll_target :: proc(ctx: ^Context, p: [2]f32, axis: int, want: f32) -> Id {
 	t := &ctx.trees[ctx.cur]
+	modal := top_modal(ctx)
 	#reverse for &n in t.nodes {
 		if .Scroll not_in n.flags || .Disabled in n.flags || !contains(n.rect, p) {
 			continue
+		}
+		if modal >= 0 && layer_of(ctx, ctx.slots[n.slot].index) < modal {
+			continue // a modal layer blocks the wheel below it
 		}
 		if !can_scroll(ctx, n.id, axis, want) {
 			continue

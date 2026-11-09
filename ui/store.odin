@@ -35,6 +35,7 @@ Mailbox :: struct($M: typeid) {
 	scroll:    [256]u8,
 	scroll_key: string,
 	scroll_index: int,
+	scroll_visible: bool, // the request names a widget to reveal, not a list index
 	scroll_has: bool,
 	next_task: Task_Id,
 }
@@ -76,12 +77,66 @@ inbox_send :: proc(inbox: ^Inbox($T), msg: T) {
 	sync.mutex_unlock(&inbox.q.mu)
 }
 
+// ---- Task liveness, for the pending state ----
+//
+// The pending state shows how long a task has run and how long ago it last emitted, without the app
+// having to carry timestamps through its state. The registry is written by the task thread (on
+// start and on every emit) and read by `view`.
+
+@(private)
+Task_Meta :: struct {
+	start, last: time.Tick,
+}
+
+@(private)
+task_meta_mu: sync.Mutex
+@(private)
+task_meta: map[Task_Id]Task_Meta
+
+@(private)
+record_task_start :: proc(id: Task_Id) {
+	sync.mutex_lock(&task_meta_mu)
+	now := time.tick_now()
+	task_meta[id] = {start = now, last = now}
+	sync.mutex_unlock(&task_meta_mu)
+}
+
+@(private)
+record_task_activity :: proc(id: Task_Id) {
+	sync.mutex_lock(&task_meta_mu)
+	if m, ok := task_meta[id]; ok {
+		m.last = time.tick_now()
+		task_meta[id] = m
+	}
+	sync.mutex_unlock(&task_meta_mu)
+}
+
+@(private)
+record_task_end :: proc(id: Task_Id) {
+	sync.mutex_lock(&task_meta_mu)
+	delete_key(&task_meta, id)
+	sync.mutex_unlock(&task_meta_mu)
+}
+
+// How long a task has been running and how long ago it last emitted something.
+task_times :: proc(id: Task_Id) -> (elapsed, idle: time.Duration, ok: bool) {
+	sync.mutex_lock(&task_meta_mu)
+	m, found := task_meta[id]
+	sync.mutex_unlock(&task_meta_mu)
+	if !found {
+		return 0, 0, false
+	}
+	now := time.tick_now()
+	return time.tick_diff(m.start, now), time.tick_diff(m.last, now), true
+}
+
 // ---- Effects ----
 
 Store_Api :: struct($M: typeid) {
 	after:    proc(store: rawptr, delay_ms: u64, msg: ^M),
 	focus:    proc(store: rawptr, key: string),
 	scroll:   proc(store: rawptr, key: string, index: int),
+	scroll_visible: proc(store: rawptr, key: string),
 	add_task: proc(store: rawptr, th: ^thread.Thread, q: ^Task_Queue(M), cancelled: ^bool, data: rawptr) -> Task_Id,
 	cancel:   proc(store: rawptr, id: Task_Id),
 }
@@ -109,6 +164,7 @@ start_task :: proc(fx: ^Effects($M), task: proc(t: ^Task_Context(M), arg: $A) ->
 	th := thread.create(task_entry(M, A), name = "myod task")
 	th.data = d
 	d.ctx.id = fx.api.add_task(fx.store, th, &d.queue, &d.cancelled, d)
+	record_task_start(d.ctx.id)
 	thread.start(th)
 	if d.ctx.window != 0 {
 		platform.wake(d.ctx.window)
@@ -127,6 +183,7 @@ emit :: proc(t: ^Task_Context($M), msg: M) {
 	append(&t.queue.msgs, msg)
 	sync.mutex_unlock(&t.queue.mu)
 	t.last = time.tick_now()
+	record_task_activity(t.id)
 	if t.window != 0 {
 		platform.wake(t.window)
 	}
@@ -154,6 +211,12 @@ focus :: proc(fx: ^Effects($M), key: string) {
 // possible. Like `focus`, it resolves the key against the last pass.
 scroll_to_index :: proc(fx: ^Effects($M), key: string, index: int) {
 	fx.api.scroll(fx.store, key, index)
+}
+
+// Scrolls the nearest scroll containers so the widget that declared `key` is fully visible, moving
+// as little as possible (ARCHITECTURE.md, "API design → 15").
+scroll_to :: proc(fx: ^Effects($M), key: string) {
+	fx.api.scroll_visible(fx.store, key)
 }
 
 @(private)
@@ -227,6 +290,7 @@ store_init :: proc(
 		after    = api_after(S, M),
 		focus    = api_focus(S, M),
 		scroll   = api_scroll(S, M),
+		scroll_visible = api_scroll_visible(S, M),
 		add_task = api_add_task(S, M),
 		cancel   = api_cancel(S, M),
 	}
@@ -328,7 +392,11 @@ ops_process :: proc($S: typeid, $M: typeid) -> proc(store: rawptr) -> bool {
 			if s.mail.scroll_has {
 				s.mail.scroll_has = false
 				if id, ok := core.name_id(&s.window.ctx, s.mail.scroll_key); ok {
-					core.request_scroll_to_index(&s.window.ctx, id, s.mail.scroll_index)
+					if s.mail.scroll_visible {
+						core.ensure_visible(&s.window.ctx, id)
+					} else {
+						core.request_scroll_to_index(&s.window.ctx, id, s.mail.scroll_index)
+					}
 				}
 			}
 		}
@@ -348,6 +416,7 @@ reap_tasks :: proc($S: typeid, $M: typeid) -> proc(store: rawptr) {
 			}
 			thread.join(t.th)
 			thread.destroy(t.th)
+			record_task_end(t.id)
 			free(t.data)
 			ordered_remove(&s.tasks, i)
 		}
@@ -364,6 +433,7 @@ ops_join :: proc($S: typeid, $M: typeid) -> proc(store: rawptr) {
 		for &t in s.tasks {
 			thread.join(t.th)
 			thread.destroy(t.th)
+			record_task_end(t.id)
 			free(t.data)
 		}
 		clear(&s.tasks)
@@ -439,6 +509,18 @@ api_scroll :: proc($S: typeid, $M: typeid) -> proc(store: rawptr, key: string, i
 		n := min(copy(s.mail.scroll[:], key), len(s.mail.scroll))
 		s.mail.scroll_key = string(s.mail.scroll[:n])
 		s.mail.scroll_index = index
+		s.mail.scroll_visible = false
+		s.mail.scroll_has = true
+	}
+}
+
+@(private)
+api_scroll_visible :: proc($S: typeid, $M: typeid) -> proc(store: rawptr, key: string) {
+	return proc(store: rawptr, key: string) {
+		s := (^Store(S, M))(store)
+		n := min(copy(s.mail.scroll[:], key), len(s.mail.scroll))
+		s.mail.scroll_key = string(s.mail.scroll[:n])
+		s.mail.scroll_visible = true
 		s.mail.scroll_has = true
 	}
 }

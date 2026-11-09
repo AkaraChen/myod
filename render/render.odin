@@ -56,6 +56,20 @@ Cmd_Glyph_Run :: struct {
 	quads:  []Glyph_Quad,
 }
 
+// A user image drawn into `rect`. `pixels` is RGBA8, `w * 4` bytes per row, straight alpha; the
+// backend keeps the GPU texture until it has not been drawn for a while. `uv` selects the part of
+// the image to show (normalized, (0,0) top-left to (1,1) bottom-right). `color` multiplies it (alpha
+// carries the disabled fade), so a white color draws it unchanged.
+Cmd_Image :: struct {
+	rect:   Rect,
+	pixels: []u8,
+	w, h:   int,
+	version: u64,
+	uv:     Rect,
+	color:  Color,
+	key:    u64, // identifies the texture: equal keys are the same image
+}
+
 // Debug view: a whole atlas page scaled into `rect` (MYOD_DEBUG_ATLAS).
 Cmd_Atlas_View :: struct {
 	rect:  Rect,
@@ -69,6 +83,7 @@ Draw_Command :: union {
 	Cmd_Clip_Push,
 	Cmd_Clip_Pop,
 	Cmd_Glyph_Run,
+	Cmd_Image,
 	Cmd_Atlas_View,
 }
 
@@ -101,4 +116,18 @@ clip_push :: proc(list: ^Command_List, rect: Rect) {
 
 clip_pop :: proc(list: ^Command_List) {
 	append(&list.commands, Cmd_Clip_Pop{})
+}
+
+// Draws an RGBA8 image into `rect`, showing the normalized `uv` part of it.
+append_image :: proc(
+	list: ^Command_List,
+	rect: Rect,
+	pixels: []u8,
+	w, h: int,
+	version: u64,
+	uv: Rect,
+	color: Color,
+	key: u64,
+) {
+	append(&list.commands, Cmd_Image{rect = rect, pixels = pixels, w = w, h = h, version = version, uv = uv, color = color, key = key})
 }

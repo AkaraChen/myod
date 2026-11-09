@@ -78,6 +78,70 @@ Instance_Mode :: enum u32 {
 	Color = 1, // sample the RGBA8 atlas, output its color
 }
 
+// User images: one pipeline sampling a single 2D texture per image, bound per batch.
+@(private)
+IMAGE_WGSL :: `
+struct Globals {
+	viewport: vec2<f32>,
+	_pad: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> g: Globals;
+@group(0) @binding(1) var image_tex: texture_2d<f32>;
+@group(0) @binding(2) var image_sampler: sampler;
+
+struct Instance {
+	@location(0) pos: vec2<f32>,
+	@location(1) size: vec2<f32>,
+	@location(2) uv0: vec2<f32>,
+	@location(3) uv1: vec2<f32>,
+	@location(4) color: vec4<f32>,
+}
+
+struct Varyings {
+	@builtin(position) pos: vec4<f32>,
+	@location(0) uv: vec2<f32>,
+	@location(1) color: vec4<f32>,
+}
+
+@vertex
+fn vs_image(@builtin(vertex_index) vi: u32, inst: Instance) -> Varyings {
+	var corners = array<vec2<f32>, 6>(
+		vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+		vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+	);
+	let c = corners[vi];
+	let p = inst.pos + c * inst.size;
+	var out: Varyings;
+	out.pos = vec4<f32>(p.x / g.viewport.x * 2.0 - 1.0, 1.0 - p.y / g.viewport.y * 2.0, 0.0, 1.0);
+	out.uv = mix(inst.uv0, inst.uv1, c);
+	out.color = inst.color;
+	return out;
+}
+
+@fragment
+fn fs_image(in: Varyings) -> @location(0) vec4<f32> {
+	let t = textureSample(image_tex, image_sampler, in.uv);
+	return vec4<f32>(t.rgb * in.color.rgb, t.a * in.color.a);
+}
+`
+
+// A GPU texture for one user image, keyed by the command's `key`. Entries not drawn for
+// IMAGE_KEEP_FRAMES frames are released; device loss drops them all and they are re-uploaded from
+// the pixels the commands carry.
+@(private)
+Image_Entry :: struct {
+	key:        u64,
+	texture:    wgpu.Texture,
+	view:       wgpu.TextureView,
+	bind_group: wgpu.BindGroup,
+	w, h:       int,
+	frame:      u64,
+}
+
+@(private)
+IMAGE_KEEP_FRAMES :: 120
+
 @(private)
 Instance :: struct {
 	pos:   [2]f32,
@@ -94,6 +158,7 @@ Instance :: struct {
 Batch :: struct {
 	first, count: u32,
 	scissor:      [4]u32, // x, y, w, h in physical pixels
+	image:        i32, // -1: the atlas pipeline; otherwise an index into `images`
 }
 
 Render_Stats :: struct {
@@ -119,6 +184,13 @@ Renderer :: struct {
 	instances:       [dynamic]Instance,
 	batches:         [dynamic]Batch,
 	stats:           Render_Stats,
+	// User images (Cmd_Image).
+	image_module:    wgpu.ShaderModule,
+	image_pipeline:  wgpu.RenderPipeline,
+	image_layout:    wgpu.BindGroupLayout,
+	image_sampler:   wgpu.Sampler,
+	images:          [dynamic]Image_Entry,
+	frame:           u64,
 }
 
 // The GPU copy of one CPU atlas: a texture array with one layer per page.
@@ -180,6 +252,51 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 	)
 
 	r.uniforms = wgpu.DeviceCreateBuffer(gpu.device, &{label = "myod globals", usage = {.Uniform, .CopyDst}, size = 16})
+
+	// The image pipeline shares the instance buffer layout, but samples one 2D texture per image.
+	r.image_module = wgpu.DeviceCreateShaderModule(
+		gpu.device,
+		&{label = "myod images", nextInChain = &wgpu.ShaderSourceWGSL{sType = .ShaderSourceWGSL, code = IMAGE_WGSL}},
+	)
+	r.image_pipeline = wgpu.DeviceCreateRenderPipeline(
+		gpu.device,
+		&{
+			label = "myod images",
+			vertex = {
+				module = r.image_module,
+				entryPoint = "vs_image",
+				bufferCount = 1,
+				buffers = &wgpu.VertexBufferLayout {
+					stepMode = .Instance,
+					arrayStride = size_of(Instance),
+					attributeCount = 5,
+					attributes = &attributes[0],
+				},
+			},
+			fragment = &{
+				module = r.image_module,
+				entryPoint = "fs_image",
+				targetCount = 1,
+				targets = &wgpu.ColorTargetState{format = format, blend = &blend, writeMask = wgpu.ColorWriteMaskFlags_All},
+			},
+			primitive = {topology = .TriangleList},
+			multisample = {count = 1, mask = 0xFFFFFFFF},
+		},
+	)
+	r.image_layout = wgpu.RenderPipelineGetBindGroupLayout(r.image_pipeline, 0)
+	r.image_sampler = wgpu.DeviceCreateSampler(
+		gpu.device,
+		&{
+			label = "myod image sampler",
+			addressModeU = .ClampToEdge,
+			addressModeV = .ClampToEdge,
+			addressModeW = .ClampToEdge,
+			magFilter = .Linear,
+			minFilter = .Linear,
+			mipmapFilter = .Nearest,
+			maxAnisotropy = 1,
+		},
+	)
 
 	atlas.init(&r.fallback[.Mask], .Mask, FALLBACK_ATLAS_SIZE, 1)
 	atlas.init(&r.fallback[.Color], .Color, FALLBACK_ATLAS_SIZE, 1)
@@ -273,6 +390,10 @@ sync_atlases :: proc(gpu: Gpu, r: ^Renderer, atlases: ^[atlas.Kind]atlas.Atlas) 
 renderer_destroy :: proc(r: ^Renderer) {
 	delete(r.instances)
 	delete(r.batches)
+	for &e in r.images {
+		release_image(&e)
+	}
+	delete(r.images)
 	// The bind group and atlas textures only exist once something was drawn.
 	if r.bind_group != nil {
 		wgpu.BindGroupRelease(r.bind_group)
@@ -292,9 +413,27 @@ renderer_destroy :: proc(r: ^Renderer) {
 		wgpu.BufferRelease(r.instance_buffer)
 	}
 	wgpu.BufferRelease(r.uniforms)
+	if r.image_pipeline != nil {
+		wgpu.SamplerRelease(r.image_sampler)
+		wgpu.BindGroupLayoutRelease(r.image_layout)
+		wgpu.RenderPipelineRelease(r.image_pipeline)
+		wgpu.ShaderModuleRelease(r.image_module)
+	}
 	wgpu.RenderPipelineRelease(r.pipeline)
 	wgpu.ShaderModuleRelease(r.module)
 	r^ = {}
+}
+
+@(private)
+release_image :: proc(e: ^Image_Entry) {
+	if e.bind_group != nil {
+		wgpu.BindGroupRelease(e.bind_group)
+	}
+	if e.texture != nil {
+		wgpu.TextureViewRelease(e.view)
+		wgpu.TextureRelease(e.texture)
+	}
+	e^ = {}
 }
 
 // Records a render pass into `target` that clears it to `clear` and draws `list`.
@@ -313,8 +452,10 @@ renderer_draw :: proc(
 	atlases: ^[atlas.Kind]atlas.Atlas = nil,
 ) {
 	start := time.tick_now()
+	r.frame += 1
+	sweep_images(r)
 	sync_atlases(gpu, r, atlases)
-	build_instances(r, list, size, scale)
+	build_instances(gpu, r, list, size, scale)
 
 	if len(r.instances) > r.instance_cap {
 		if r.instance_buffer != nil {
@@ -349,12 +490,21 @@ renderer_draw :: proc(
 	)
 	draw_calls := 0
 	if len(r.instances) > 0 {
-		wgpu.RenderPassEncoderSetPipeline(pass, r.pipeline)
-		wgpu.RenderPassEncoderSetBindGroup(pass, 0, r.bind_group)
 		wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, r.instance_buffer, 0, u64(len(r.instances) * size_of(Instance)))
+		bound_image: i32 = -2
 		for b in r.batches {
 			if b.count == 0 || b.scissor[2] == 0 || b.scissor[3] == 0 {
 				continue
+			}
+			if b.image != bound_image {
+				if b.image >= 0 && int(b.image) < len(r.images) {
+					wgpu.RenderPassEncoderSetPipeline(pass, r.image_pipeline)
+					wgpu.RenderPassEncoderSetBindGroup(pass, 0, r.images[b.image].bind_group)
+				} else {
+					wgpu.RenderPassEncoderSetPipeline(pass, r.pipeline)
+					wgpu.RenderPassEncoderSetBindGroup(pass, 0, r.bind_group)
+				}
+				bound_image = b.image
 			}
 			wgpu.RenderPassEncoderSetScissorRect(pass, b.scissor[0], b.scissor[1], b.scissor[2], b.scissor[3])
 			wgpu.RenderPassEncoderDraw(pass, vertexCount = 6, instanceCount = b.count, firstVertex = 0, firstInstance = b.first)
@@ -372,16 +522,18 @@ renderer_draw :: proc(
 	}
 }
 
-// Turns draw commands into pixel-snapped instances, split into batches at clip changes.
+// Turns draw commands into pixel-snapped instances, split into batches at clip changes and at image
+// texture changes.
 @(private)
-build_instances :: proc(r: ^Renderer, list: render.Command_List, size: [2]u32, scale: f32) {
+build_instances :: proc(gpu: Gpu, r: ^Renderer, list: render.Command_List, size: [2]u32, scale: f32) {
 	clear(&r.instances)
 	clear(&r.batches)
 
 	full := [4]i32{0, 0, i32(size.x), i32(size.y)}
 	clip_stack := make([dynamic][4]i32, 0, 16, context.temp_allocator)
 	clip := full
-	open_batch(r, clip)
+	image: i32 = -1
+	open_batch(r, clip, image)
 
 	for cmd in list.commands {
 		switch c in cmd {
@@ -389,27 +541,62 @@ build_instances :: proc(r: ^Renderer, list: render.Command_List, size: [2]u32, s
 			append(&clip_stack, clip)
 			x0, y0, x1, y1 := snap(c.rect, scale)
 			clip = intersect(clip, {i32(x0), i32(y0), i32(x1), i32(y1)})
-			open_batch(r, clip)
+			open_batch(r, clip, image)
 		case render.Cmd_Clip_Pop:
 			if len(clip_stack) > 0 {
 				clip = pop(&clip_stack)
 			} else {
 				clip = full
 			}
-			open_batch(r, clip)
+			open_batch(r, clip, image)
 		case render.Cmd_Rect:
 			if clip.z <= clip.x || clip.w <= clip.y {
 				continue // fully clipped
+			}
+			if image != -1 {
+				image = -1
+				open_batch(r, clip, image)
 			}
 			push_rect(r, c, scale)
 		case render.Cmd_Glyph_Run:
 			if clip.z <= clip.x || clip.w <= clip.y {
 				continue
 			}
+			if image != -1 {
+				image = -1
+				open_batch(r, clip, image)
+			}
 			push_glyph_run(r, c, scale)
+		case render.Cmd_Image:
+			if clip.z <= clip.x || clip.w <= clip.y {
+				continue
+			}
+			index := image_entry(gpu, r, c)
+			if index < 0 {
+				continue
+			}
+			if image != index {
+				image = index
+				open_batch(r, clip, image)
+			}
+			x0, y0, x1, y1 := snap(c.rect, scale)
+			if x1 <= x0 || y1 <= y0 {
+				continue
+			}
+			append(&r.instances, Instance {
+				pos = {x0, y0},
+				size = {x1 - x0, y1 - y0},
+				uv0 = {c.uv.x, c.uv.y},
+				uv1 = {c.uv.x + c.uv.w, c.uv.y + c.uv.h},
+				color = encode(r^, c.color),
+			})
 		case render.Cmd_Atlas_View:
 			if clip.z <= clip.x || clip.w <= clip.y {
 				continue
+			}
+			if image != -1 {
+				image = -1
+				open_batch(r, clip, image)
 			}
 			x0, y0, x1, y1 := snap(c.rect, scale)
 			append(&r.instances, Instance {
@@ -426,9 +613,68 @@ build_instances :: proc(r: ^Renderer, list: render.Command_List, size: [2]u32, s
 	r.batches[len(r.batches) - 1].count = u32(len(r.instances)) - r.batches[len(r.batches) - 1].first
 }
 
+// Finds or creates the GPU texture for an image command. Returns its index in `r.images`, or -1
+// when the image is unusable (empty, wrong size or larger than the device supports).
+@(private)
+image_entry :: proc(gpu: Gpu, r: ^Renderer, c: render.Cmd_Image) -> i32 {
+	if c.w <= 0 || c.h <= 0 || c.w > 8192 || c.h > 8192 || len(c.pixels) < c.w * c.h * 4 {
+		return -1
+	}
+	for &e, i in r.images {
+		if e.key == c.key {
+			e.frame = r.frame
+			return i32(i)
+		}
+	}
+	texture := wgpu.DeviceCreateTexture(
+		gpu.device,
+		&{
+			label = "myod image",
+			usage = {.TextureBinding, .CopyDst},
+			dimension = ._2D,
+			size = {u32(c.w), u32(c.h), 1},
+			format = .RGBA8Unorm,
+			mipLevelCount = 1,
+			sampleCount = 1,
+		},
+	)
+	view := wgpu.TextureCreateView(texture, &{dimension = ._2D, arrayLayerCount = 1, mipLevelCount = 1, aspect = .All})
+	wgpu.QueueWriteTexture(
+		gpu.queue,
+		&{texture = texture, origin = {0, 0, 0}, aspect = .All},
+		raw_data(c.pixels),
+		uint(c.w * c.h * 4),
+		&{bytesPerRow = u32(c.w * 4), rowsPerImage = u32(c.h)},
+		&{u32(c.w), u32(c.h), 1},
+	)
+	entries := [?]wgpu.BindGroupEntry {
+		{binding = 0, buffer = r.uniforms, size = 16},
+		{binding = 1, textureView = view},
+		{binding = 2, sampler = r.image_sampler},
+	}
+	bind_group := wgpu.DeviceCreateBindGroup(
+		gpu.device,
+		&{label = "myod image", layout = r.image_layout, entryCount = len(entries), entries = &entries[0]},
+	)
+	append(&r.images, Image_Entry{key = c.key, texture = texture, view = view, bind_group = bind_group, w = c.w, h = c.h, frame = r.frame})
+	return i32(len(r.images) - 1)
+}
+
+// Releases image textures that have not been drawn for IMAGE_KEEP_FRAMES frames.
+@(private)
+sweep_images :: proc(r: ^Renderer) {
+	for i := len(r.images) - 1; i >= 0; i -= 1 {
+		if r.frame - r.images[i].frame <= IMAGE_KEEP_FRAMES {
+			continue
+		}
+		release_image(&r.images[i])
+		ordered_remove(&r.images, i)
+	}
+}
+
 // Clip rects are kept as [x0, y0, x1, y1]; batches store [x, y, w, h].
 @(private)
-open_batch :: proc(r: ^Renderer, clip: [4]i32) {
+open_batch :: proc(r: ^Renderer, clip: [4]i32, image: i32 = -1) {
 	first := u32(len(r.instances))
 	if n := len(r.batches); n > 0 {
 		last := &r.batches[n - 1]
@@ -439,7 +685,7 @@ open_batch :: proc(r: ^Renderer, clip: [4]i32) {
 	}
 	w := max(clip.z - clip.x, 0)
 	h := max(clip.w - clip.y, 0)
-	append(&r.batches, Batch{first = first, scissor = {u32(max(clip.x, 0)), u32(max(clip.y, 0)), u32(w), u32(h)}})
+	append(&r.batches, Batch{first = first, scissor = {u32(max(clip.x, 0)), u32(max(clip.y, 0)), u32(w), u32(h)}, image = image})
 }
 
 @(private)

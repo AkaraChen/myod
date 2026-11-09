@@ -284,7 +284,7 @@ start_frame :: proc(w: ^Window) {
 	w.pass = 0
 	w.ctx.frame_requested = false
 	text.begin_frame(&w.text)
-	w.outer = core.frame_begin(&w.ctx, size, scale, theme.make_theme(w.mode))
+	w.outer = core.frame_begin(&w.ctx, size, scale, theme.make_theme(w.mode), bounded = true)
 	append(&window_stack, w)
 	w.started = true
 }
@@ -524,6 +524,15 @@ hash_commands :: proc(list: ^render.Command_List) -> u64 {
 		case render.Cmd_Atlas_View:
 			x := v
 			h = core.hash_words(h, &x, builtin.size_of(x))
+		case render.Cmd_Image:
+			h = core.mix(h, v.key)
+			h = core.mix(h, v.version)
+			r := [4]f32{v.rect.x, v.rect.y, v.rect.w, v.rect.h}
+			uv := [4]f32{v.uv.x, v.uv.y, v.uv.w, v.uv.h}
+			h = core.hash_words(h, &r, builtin.size_of(r))
+			h = core.hash_words(h, &uv, builtin.size_of(uv))
+			c := v.color
+			h = core.hash_words(h, &c, builtin.size_of(c))
 		}
 	}
 	return core.mix(h, u64(len(list.commands)))
@@ -558,8 +567,13 @@ on_live_resize :: proc(data: rawptr) {
 // Switches the window's theme; system theme changes are then ignored.
 set_theme :: proc(mode: theme.Mode) {
 	w := current_window()
+	if w.mode == mode && w.mode_set {
+		return
+	}
 	w.mode = mode
 	w.mode_set = true
+	// Applied to the frame being declared too, so switching in `view` changes this frame, not the next.
+	w.ctx.theme = theme.make_theme(mode)
 }
 
 // The window's current theme.
