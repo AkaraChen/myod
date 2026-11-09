@@ -1,0 +1,33 @@
+# Third-party dependencies of myod: versions, URLs and hashes are all pinned.
+#
+# After editing this file:
+#   just vendor   rebuild with Nix and write the results to prebuilt/<platform>/
+#   just verify   check that the committed artifacts are byte-for-byte identical to the Nix build
+#
+# The `build` field:
+#   "source"            built from source with Nix
+#   "upstream-release"  for now, the upstream prebuilt static library is used as is (hash-checked only)
+
+[sdl3]
+version = "3.4.18"
+build = "source"
+url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz"
+hash = "sha256-nHXPFjMDIsIX3t0uBgnxEk8bVLhjPnY0Z7RoTQ9DNKM="
+bindings = "Odin vendor:sdl3 (matches SDL 3.4.18)"
+
+[wgpu_native]
+version = "29.0.1.1"
+build = "upstream-release"
+bindings = "Odin vendor:wgpu (matches wgpu-native v29.0.1.1)"
+
+[wgpu_native.artifacts.aarch64-darwin]
+url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-macos-aarch64-release.zip"
+hash = "sha256-BkHx8YnibWlBJvtpYVSc/JQGKY6w8H0DVl9H142qPi8="
+
+[wgpu_native.artifacts.x86_64-linux]
+url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-x86_64-release.zip"
+hash = "sha256-/EJ6yy1PETqcny5d2ZM2ZJ5VgVTDvqGaSSmIvqamcwM="
+
+[wgpu_native.artifacts.aarch64-linux]
+url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-aarch64-release.zip"
+hash = "sha256-thMN+CgDtkTeAYbEJIFaGobE+Y8xg63Q/L4aZX/8mBA="
