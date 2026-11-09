@@ -44,8 +44,10 @@ Glyph_Position :: struct {
 Feature :: struct {
 	tag:        u32,
 	value:      u32,
-	start, end: u32,
+	start, end: u32, // byte range in the buffer; 0 and FEATURE_GLOBAL_END apply it everywhere
 }
+
+FEATURE_GLOBAL_END :: max(u32)
 
 @(default_calling_convention = "c", link_prefix = "hb_")
 foreign lib {

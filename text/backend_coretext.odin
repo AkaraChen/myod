@@ -5,6 +5,7 @@
 package text
 
 import "core:math"
+import "core:strings"
 
 import CF "core:sys/darwin/CoreFoundation"
 import CG "core:sys/darwin/CoreGraphics"
@@ -17,9 +18,11 @@ CoreText_Backend :: struct {
 
 @(private)
 Darwin_Face :: struct {
-	font: CT.FontRef,
-	size: f32,
-	base: Font_Id, // NO_FONT for fallback faces chosen by CoreText
+	font:       CT.FontRef,
+	size:       f32,
+	base:       Font_Id, // NO_FONT for fallback faces chosen by CoreText
+	features:   string,
+	variations: string,
 }
 
 coretext_init :: proc(b: ^CoreText_Backend) -> bool {
@@ -29,6 +32,8 @@ coretext_init :: proc(b: ^CoreText_Backend) -> bool {
 coretext_destroy :: proc(b: ^CoreText_Backend) {
 	for f in b.faces {
 		CF.Release(CF.TypeRef(f.font))
+		delete(f.features)
+		delete(f.variations)
 	}
 	for d in b.fonts {
 		CF.Release(CF.TypeRef(d))
@@ -51,15 +56,75 @@ coretext_load_font :: proc(b: ^CoreText_Backend, data: []u8) -> (Font_Id, bool) 
 	return Font_Id(len(b.fonts) - 1), true
 }
 
-coretext_face :: proc(b: ^CoreText_Backend, font: Font_Id, size: f32) -> Face_Id {
+coretext_face :: proc(b: ^CoreText_Backend, font: Font_Id, size: f32, features, variations: string) -> Face_Id {
 	for f, i in b.faces {
-		if f.base == font && f.size == size {
+		if f.base == font && f.size == size && f.features == features && f.variations == variations {
 			return Face_Id(i)
 		}
 	}
-	ct_font := CT.FontCreateWithFontDescriptor(b.fonts[font], CG.Float(size), nil)
-	append(&b.faces, Darwin_Face{font = ct_font, size = size, base = font})
+	desc := b.fonts[font]
+	if features != "" || variations != "" {
+		desc = descriptor_with(desc, parse_features(features), parse_variations(variations))
+	}
+	ct_font := CT.FontCreateWithFontDescriptor(desc, CG.Float(size), nil)
+	if desc != b.fonts[font] {
+		CF.Release(CF.TypeRef(desc))
+	}
+	append(&b.faces, Darwin_Face {
+		font = ct_font,
+		size = size,
+		base = font,
+		features = strings.clone(features),
+		variations = strings.clone(variations),
+	})
 	return Face_Id(len(b.faces) - 1)
+}
+
+// A copy of `base` with OpenType feature settings and variation axes applied.
+@(private)
+descriptor_with :: proc(base: CT.FontDescriptorRef, features: []Feature, variations: []Variation) -> CT.FontDescriptorRef {
+	keys := make([dynamic]rawptr, context.temp_allocator)
+	values := make([dynamic]rawptr, context.temp_allocator)
+	owned := make([dynamic]CF.TypeRef, context.temp_allocator)
+	defer for o in owned {
+		CF.Release(o)
+	}
+
+	if len(features) > 0 {
+		settings := make([]rawptr, len(features), context.temp_allocator)
+		for f, i in features {
+			tag := f.tag
+			tag_str := CF.StringCreateWithBytes(nil, &tag[0], 4, CF.StringEncoding(CF.StringBuiltInEncodings.UTF8), false)
+			value := i32(f.value)
+			num := CF.NumberCreate(nil, .SInt32Type, &value)
+			k := [2]rawptr{rawptr(CT.kFontOpenTypeFeatureTag), rawptr(CT.kFontOpenTypeFeatureValue)}
+			v := [2]rawptr{rawptr(tag_str), rawptr(num)}
+			settings[i] = rawptr(CF.DictionaryCreate(nil, &k[0], &v[0], 2, &CF.kTypeDictionaryKeyCallBacks, &CF.kTypeDictionaryValueCallBacks))
+			append(&owned, CF.TypeRef(tag_str), CF.TypeRef(num), CF.TypeRef(settings[i]))
+		}
+		array := CF.ArrayCreate(nil, &settings[0], CF.Index(len(settings)), &CF.kTypeArrayCallBacks)
+		append(&owned, CF.TypeRef(array))
+		append(&keys, rawptr(CT.kFontFeatureSettingsAttribute))
+		append(&values, rawptr(array))
+	}
+	if len(variations) > 0 {
+		axis_keys := make([]rawptr, len(variations), context.temp_allocator)
+		axis_values := make([]rawptr, len(variations), context.temp_allocator)
+		for v, i in variations {
+			tag := i32(tag_u32(v.tag))
+			value := f64(v.value)
+			axis_keys[i] = rawptr(CF.NumberCreate(nil, .SInt32Type, &tag))
+			axis_values[i] = rawptr(CF.NumberCreate(nil, .Float64Type, &value))
+			append(&owned, CF.TypeRef(axis_keys[i]), CF.TypeRef(axis_values[i]))
+		}
+		dict := CF.DictionaryCreate(nil, &axis_keys[0], &axis_values[0], CF.Index(len(variations)), &CF.kTypeDictionaryKeyCallBacks, &CF.kTypeDictionaryValueCallBacks)
+		append(&owned, CF.TypeRef(dict))
+		append(&keys, rawptr(CT.kFontVariationAttribute))
+		append(&values, rawptr(dict))
+	}
+	attrs := CF.DictionaryCreate(nil, &keys[0], &values[0], CF.Index(len(keys)), &CF.kTypeDictionaryKeyCallBacks, &CF.kTypeDictionaryValueCallBacks)
+	defer CF.Release(CF.TypeRef(attrs))
+	return CT.FontDescriptorCreateCopyWithAttributes(base, attrs)
 }
 
 // Finds or registers the face for a CTFont that CoreText picked for a run.

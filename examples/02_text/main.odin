@@ -25,7 +25,10 @@ import "myod:render"
 import "myod:text"
 import "myod:theme"
 
-PAGE :: [2]f32{960, 900}
+PAGE :: [2]f32{1040, 1180}
+
+// A variable font that ships with macOS, used to demonstrate variation axes.
+SYSTEM_VARIABLE_FONT :: "/System/Library/Fonts/SFNS.ttf"
 SCALES :: [4]f32{1, 1.25, 1.5, 2}
 
 App :: struct {
@@ -33,7 +36,8 @@ App :: struct {
 	gpu:         backend.Gpu,
 	surface:     backend.Surface,
 	renderer:    backend.Renderer,
-	text:        text.Context,
+	variable:    text.Font_Ref, // 0 if the system variable font is unavailable
+	text:        text.Context, // declared last: inside the struct, `text` now names this field
 	mode:        theme.Mode,
 	mode_forced: bool,
 	scale:       f32,
@@ -96,6 +100,7 @@ main :: proc() {
 	defer text.destroy(&app.text)
 
 	app.mode = .Dark if platform.is_dark_theme() else .Light
+	app.variable, _ = text.load_font(&app.text, SYSTEM_VARIABLE_FONT)
 
 	if selftest {
 		os.exit(0 if run_selftest(&app) else 1)
@@ -139,7 +144,7 @@ redraw :: proc(data: rawptr) {
 
 	text.begin_frame(&app.text)
 	list := render.make_command_list()
-	draw_page(&list, &app.text, t, scale, f32(size.x) / scale)
+	draw_page(&list, &app.text, t, scale, f32(size.x) / scale, app.variable)
 
 	frame, ok := backend.begin_frame(app.gpu, &app.surface, size)
 	if !ok {
@@ -165,7 +170,7 @@ redraw :: proc(data: rawptr) {
 
 PARAGRAPH :: "Wrapping follows UAX #14: English breaks between words, while 中文可以在任意两个汉字之间断行，标点遵守避头尾规则。Resize the window and this paragraph reflows — 拖动窗口边缘，这一段会实时重新排版。"
 
-draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32, width: f32) {
+draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32, width: f32, variable: text.Font_Ref) {
 	p := t.on_bg
 	x: f32 = 40
 	y: f32 = 32
@@ -216,6 +221,34 @@ draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, s
 	text.draw_wrapped(l, ctx, PARAGRAPH, {x + 120, y}, body, max_w, scale)
 	size := text.measure_wrapped(ctx, PARAGRAPH, body, max_w, scale)
 	render.line(l, {x + 120 + max_w, y, 1, size.y}, p.border) // the wrap width
+	y += size.y + 24
+
+	// OpenType features on DWG (Cascadia Code supplies calt, ss19, frac, …).
+	sample := "0O != => -> 1/2 3/4"
+	for f in ([?]string{"", "-calt", "ss19", "frac"}) {
+		text.draw(l, ctx, f if f != "" else "default", {x, y}, meta, scale)
+		st := code
+		st.features = f
+		text.draw(l, ctx, sample, {x + 120, y}, st, scale)
+		y += 28
+	}
+
+	// Variation axes on a system variable font.
+	if variable != 0 {
+		y += 8
+		for w in ([?]int{100, 300, 500, 700, 900}) {
+			text.draw(l, ctx, fmt.tprintf("wght=%d", w), {x, y}, meta, scale)
+			st := text.Style{size = 20, line_height = 28, color = p.fg, font = variable, variations = fmt.tprintf("wght=%d", w)}
+			text.draw(l, ctx, "Variable weight · Hamburgefonstiv", {x + 120, y}, st, scale)
+			y += 28
+		}
+		for w in ([?]int{60, 100, 140}) {
+			text.draw(l, ctx, fmt.tprintf("wdth=%d", w), {x, y}, meta, scale)
+			st := text.Style{size = 20, line_height = 28, color = p.fg, font = variable, variations = fmt.tprintf("wdth=%d wght=600", w)}
+			text.draw(l, ctx, "Variable width · Hamburgefonstiv", {x + 120, y}, st, scale)
+			y += 28
+		}
+	}
 }
 
 // ---- Self-test ----
@@ -240,6 +273,7 @@ run_selftest :: proc(app: ^App) -> bool {
 	}
 
 	ok = check_wrapping_and_spacing(app) && ok
+	ok = check_features_and_variations(app) && ok
 
 	if text.BACKEND_NAME != "CoreText" {
 		// Fallback (Fontconfig) and color glyphs (FreeType + PNG) land in M2c for this backend.
@@ -332,6 +366,51 @@ check_wrapping_and_spacing :: proc(app: ^App) -> bool {
 	}
 	if ok {
 		fmt.println("ok   wrapping (English and Chinese), uppercasing and letter spacing at every scale")
+	}
+	return ok
+}
+
+check_features_and_variations :: proc(app: ^App) -> bool {
+	ok := true
+	ctx := &app.text
+	base := text.Style{size = 16, line_height = 24, weight = .Regular}
+
+	glyph_ids :: proc(ctx: ^text.Context, s: string, st: text.Style) -> []u32 {
+		ids := make([dynamic]u32, context.temp_allocator)
+		for g in text.shape(ctx, s, st, 2).glyphs {
+			append(&ids, g.glyph)
+		}
+		return ids[:]
+	}
+	Case :: struct {
+		features, sample, what: string,
+	}
+	for c in ([?]Case{{"-calt", "!= =>", "turning off calt changes the ligatures"}, {"ss19", "0", "ss19 changes the zero"}, {"frac", "1/2", "frac changes the fraction"}}) {
+		st := base
+		st.features = c.features
+		if slice.equal(glyph_ids(ctx, c.sample, base), glyph_ids(ctx, c.sample, st)) {
+			fmt.eprintfln("FAIL features: %s (%q shapes the same with %q)", c.what, c.sample, c.features)
+			ok = false
+		}
+	}
+	if ok {
+		fmt.println("ok   features: -calt, ss19 and frac change the glyphs")
+	}
+
+	if app.variable == 0 {
+		fmt.println("SKIP variations: the system variable font is not available")
+		return ok
+	}
+	light := text.Style{size = 20, line_height = 28, font = app.variable, variations = "wght=100"}
+	heavy := light
+	heavy.variations = "wght=900"
+	lw := text.shape(ctx, "Hamburgefonstiv", light, 2).width
+	hw := text.shape(ctx, "Hamburgefonstiv", heavy, 2).width
+	if !(hw > lw) {
+		fmt.eprintfln("FAIL variations: wght=900 is %v px wide, wght=100 is %v px; the heavier weight should be wider", hw, lw)
+		ok = false
+	} else {
+		fmt.printfln("ok   variations: wght=100 → %v px, wght=900 → %v px", lw, hw)
 	}
 	return ok
 }

@@ -7,6 +7,7 @@ package text
 
 import "core:math"
 import "core:os"
+import "core:strconv"
 import "core:path/filepath"
 import "core:strings"
 import "core:unicode"
@@ -28,6 +29,12 @@ Style :: struct {
 	line_height:    f32,
 	weight:         Weight,
 	color:          theme.Color,
+	// A font from load_font. Zero means DWG, in the style's weight.
+	font:           Font_Ref,
+	// OpenType features, CSS-like: "ss19 -calt frac=1". `tag` turns a feature on, `-tag` off.
+	features:       string,
+	// Variable font axes: "wght=450 wdth=90". Axes not listed keep their defaults.
+	variations:     string,
 	// Uppercase Latin letters before shaping; Chinese and other scripts are left alone.
 	uppercase:      bool,
 	// Extra space after each Latin character, in em. Rounded to whole physical pixels so glyphs
@@ -35,8 +42,19 @@ Style :: struct {
 	letter_spacing: f32,
 }
 
-Font_Id :: distinct u32 // a loaded font file
-Face_Id :: distinct u32 // a font at one physical pixel size
+Font_Id :: distinct u32 // a font loaded into the backend
+Face_Id :: distinct u32 // a font at one physical pixel size, with one set of features and axes
+Font_Ref :: distinct u32 // a font from load_font, for Style.font; 0 means DWG
+
+Feature :: struct {
+	tag:   [4]u8,
+	value: u32,
+}
+
+Variation :: struct {
+	tag:   [4]u8,
+	value: f32,
+}
 
 NO_FONT :: max(Font_Id)
 
@@ -84,6 +102,7 @@ Context :: struct {
 	backend: Backend,
 	atlases: [atlas.Kind]atlas.Atlas,
 	dwg:     [Weight]Font_Id,
+	fonts:   [dynamic]Font_Id, // Font_Ref → Font_Id; index 0 is unused (it means DWG)
 	glyphs:  map[Glyph_Key]Glyph_Entry,
 	shapes:  map[Shape_Key]Shape_Entry,
 	frame:   u64,
@@ -125,6 +144,7 @@ init :: proc(ctx: ^Context, font_dir := "") -> bool {
 	if !backend_init(&ctx.backend) {
 		return false
 	}
+	append(&ctx.fonts, NO_FONT)
 	ub.init_linebreak()
 	ub.init_graphemebreak()
 	ub.init_wordbreak()
@@ -168,6 +188,7 @@ destroy :: proc(ctx: ^Context) {
 	}
 	delete(ctx.shapes)
 	delete(ctx.glyphs)
+	delete(ctx.fonts)
 	for &a in ctx.atlases {
 		atlas.destroy(&a)
 	}
@@ -200,8 +221,77 @@ physical_size :: proc(size, scale: f32) -> f32 {
 	return max(2, math.round(size * scale / 2) * 2)
 }
 
+// Loads a font file (TrueType / OpenType) for use through Style.font.
+load_font :: proc(ctx: ^Context, path: string) -> (Font_Ref, bool) {
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil {
+		return 0, false
+	}
+	defer delete(data)
+	id, ok := backend_load_font(&ctx.backend, data)
+	if !ok {
+		return 0, false
+	}
+	append(&ctx.fonts, id)
+	return Font_Ref(len(ctx.fonts) - 1), true
+}
+
 face_for :: proc(ctx: ^Context, style: Style, scale: f32) -> Face_Id {
-	return backend_face(&ctx.backend, ctx.dwg[style.weight], physical_size(style.size, scale))
+	font := ctx.fonts[style.font] if style.font != 0 else ctx.dwg[style.weight]
+	return backend_face(&ctx.backend, font, physical_size(style.size, scale), style.features, style.variations)
+}
+
+// Parses "ss19 -calt frac=1" into features. Unknown syntax is skipped.
+parse_features :: proc(s: string, allocator := context.temp_allocator) -> []Feature {
+	out := make([dynamic]Feature, allocator)
+	rest := s
+	for item in strings.fields_iterator(&rest) {
+		f := Feature{value = 1}
+		name := item
+		if strings.has_prefix(name, "-") {
+			f.value = 0
+			name = name[1:]
+		}
+		if eq := strings.index_byte(name, '='); eq >= 0 {
+			v, ok := strconv.parse_uint(name[eq + 1:])
+			if !ok {
+				continue
+			}
+			f.value = u32(v)
+			name = name[:eq]
+		}
+		if len(name) != 4 {
+			continue
+		}
+		copy(f.tag[:], name)
+		append(&out, f)
+	}
+	return out[:]
+}
+
+// Parses "wght=450 wdth=90" into variation axis settings. Unknown syntax is skipped.
+parse_variations :: proc(s: string, allocator := context.temp_allocator) -> []Variation {
+	out := make([dynamic]Variation, allocator)
+	rest := s
+	for item in strings.fields_iterator(&rest) {
+		eq := strings.index_byte(item, '=')
+		if eq != 4 {
+			continue
+		}
+		v, ok := strconv.parse_f32(item[eq + 1:])
+		if !ok {
+			continue
+		}
+		var := Variation{value = v}
+		copy(var.tag[:], item[:4])
+		append(&out, var)
+	}
+	return out[:]
+}
+
+// An OpenType tag as a 32-bit big-endian integer, the form CoreText, FreeType and HarfBuzz use.
+tag_u32 :: proc(tag: [4]u8) -> u32 {
+	return u32(tag[0]) << 24 | u32(tag[1]) << 16 | u32(tag[2]) << 8 | u32(tag[3])
 }
 
 // Shapes `s` as a single run with the style's face, using the shaping cache. Uppercasing and

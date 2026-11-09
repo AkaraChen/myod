@@ -5,6 +5,7 @@
 package text
 
 import "core:math"
+import "core:strings"
 
 import hb "../third_party/odin/harfbuzz"
 import ft "../third_party/odin/myod_ft"
@@ -18,13 +19,16 @@ FreeType_Backend :: struct {
 
 @(private)
 FreeType_Face :: struct {
-	face:    ft.Face, // each face has its own FT_Face, since an FT_Face has one current size
-	hb_font: ^hb.Font,
-	size:    f32,
-	base:    Font_Id,
-	color:   bool,
-	ascent:  f32,
-	descent: f32,
+	face:       ft.Face, // each face has its own FT_Face, since an FT_Face has one size and one set of axes
+	hb_font:    ^hb.Font,
+	size:       f32,
+	base:       Font_Id,
+	color:      bool,
+	ascent:     f32,
+	descent:    f32,
+	features:   string,
+	variations: string,
+	hb_features: []hb.Feature,
 }
 
 freetype_init :: proc(b: ^FreeType_Backend) -> bool {
@@ -39,6 +43,9 @@ freetype_destroy :: proc(b: ^FreeType_Backend) {
 	for f in b.faces {
 		hb.font_destroy(f.hb_font)
 		ft.done_face(f.face)
+		delete(f.features)
+		delete(f.variations)
+		delete(f.hb_features)
 	}
 	for data in b.fonts {
 		delete(data)
@@ -63,19 +70,33 @@ freetype_load_font :: proc(b: ^FreeType_Backend, data: []u8) -> (Font_Id, bool) 
 	return Font_Id(len(b.fonts) - 1), true
 }
 
-freetype_face :: proc(b: ^FreeType_Backend, font: Font_Id, size: f32) -> Face_Id {
+freetype_face :: proc(b: ^FreeType_Backend, font: Font_Id, size: f32, features, variations: string) -> Face_Id {
 	for f, i in b.faces {
-		if f.base == font && f.size == size {
+		if f.base == font && f.size == size && f.features == features && f.variations == variations {
 			return Face_Id(i)
 		}
 	}
 	data := b.fonts[font]
-	f := FreeType_Face{size = size, base = font}
+	f := FreeType_Face{size = size, base = font, features = strings.clone(features), variations = strings.clone(variations)}
 	if ft.new_face(b.lib, raw_data(data), i64(len(data)), &f.face) != 0 {
 		panic("myod: FreeType failed to open a font it opened before")
 	}
 	ft.set_pixel_size(f.face, u32(size))
+	if vars := parse_variations(variations); len(vars) > 0 {
+		tags := make([]u32, len(vars), context.temp_allocator)
+		values := make([]f64, len(vars), context.temp_allocator)
+		for v, i in vars {
+			tags[i] = tag_u32(v.tag)
+			values[i] = f64(v.value)
+		}
+		ft.set_variations(f.face, raw_data(tags), raw_data(values), i32(len(vars)))
+	}
 	f.hb_font = hb.ft_font_create_referenced(rawptr(f.face))
+	feats := parse_features(features)
+	f.hb_features = make([]hb.Feature, len(feats))
+	for feat, i in feats {
+		f.hb_features[i] = {tag = tag_u32(feat.tag), value = feat.value, start = 0, end = hb.FEATURE_GLOBAL_END}
+	}
 	f.color = ft.has_color(f.face) != 0
 	asc, desc, height: f64
 	ft.metrics(f.face, &asc, &desc, &height)
@@ -95,7 +116,8 @@ freetype_shape :: proc(b: ^FreeType_Backend, face: Face_Id, s: string, allocator
 	hb.buffer_reset(b.buffer)
 	hb.buffer_add_utf8(b.buffer, raw_data(s), i32(len(s)), 0, i32(len(s)))
 	hb.buffer_guess_segment_properties(b.buffer)
-	hb.shape(f.hb_font, b.buffer, nil, 0) // HarfBuzz's defaults include `liga` and `calt`
+	// HarfBuzz's defaults include `liga` and `calt`; the face's features override them.
+	hb.shape(f.hb_font, b.buffer, raw_data(f.hb_features), u32(len(f.hb_features)))
 
 	n: u32
 	infos := hb.buffer_get_glyph_infos(b.buffer, &n)

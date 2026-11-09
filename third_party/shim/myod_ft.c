@@ -5,6 +5,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_MULTIPLE_MASTERS_H
 
 #include <string.h>
 
@@ -78,4 +79,22 @@ int myod_ft_render(FT_Face face, unsigned int glyph, int subpixel_64, int color,
 
 int myod_ft_has_color(FT_Face face) {
 	return FT_HAS_COLOR(face) ? 1 : 0;
+}
+
+// Sets variation axes by tag (design coordinates); axes not listed keep their defaults.
+// Returns 0 on success, or non-zero if the face is not a variable font.
+int myod_ft_set_variations(FT_Face face, const unsigned int *tags, const double *values, int count) {
+	FT_MM_Var *mm = NULL;
+	if (FT_Get_MM_Var(face, &mm)) return 1;
+	FT_Fixed coords[32];
+	unsigned int n = mm->num_axis < 32 ? mm->num_axis : 32;
+	for (unsigned int i = 0; i < n; i++) {
+		coords[i] = mm->axis[i].def;
+		for (int j = 0; j < count; j++) {
+			if (mm->axis[i].tag == tags[j]) coords[i] = (FT_Fixed)(values[j] * 65536.0);
+		}
+	}
+	int err = FT_Set_Var_Design_Coordinates(face, n, coords);
+	FT_Done_MM_Var(face->glyph->library, mm);
+	return err;
 }

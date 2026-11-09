@@ -43,4 +43,5 @@ foreign shim {
 	metrics :: proc(face: Face, ascender, descender, height: ^f64) ---
 	render :: proc(face: Face, glyph: u32, subpixel_64: i32, color: i32, out: ^Bitmap) -> i32 ---
 	has_color :: proc(face: Face) -> i32 ---
+	set_variations :: proc(face: Face, tags: [^]u32, values: [^]f64, count: i32) -> i32 ---
 }
