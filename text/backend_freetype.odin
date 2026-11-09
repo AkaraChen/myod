@@ -110,7 +110,7 @@ freetype_shape :: proc(b: ^FreeType_Backend, face: Face_Id, s: string, allocator
 			glyph   = infos[i].codepoint,
 			x       = pen + f32(p.x_offset) / 64,
 			y       = -f32(p.y_offset) / 64,
-			cluster = infos[i].cluster, // a UTF-8 byte offset (CoreText reports UTF-16 indices)
+			cluster = infos[i].cluster, // a UTF-8 byte offset
 		}
 		pen += f32(p.x_advance) / 64
 	}

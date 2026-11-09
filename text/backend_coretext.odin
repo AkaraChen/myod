@@ -103,6 +103,16 @@ coretext_shape :: proc(b: ^CoreText_Backend, face: Face_Id, s: string, allocator
 	ascent, descent, leading: CG.Float
 	out.width = f32(CT.LineGetTypographicBounds(line, &ascent, &descent, &leading))
 
+	// CoreText reports UTF-16 indices; clusters are UTF-8 byte offsets, as with HarfBuzz.
+	utf16_to_byte := make([dynamic]u32, 0, len(s) + 1, context.temp_allocator)
+	for r, offset in s {
+		append(&utf16_to_byte, u32(offset))
+		if r > 0xFFFF {
+			append(&utf16_to_byte, u32(offset)) // the second half of a surrogate pair
+		}
+	}
+	append(&utf16_to_byte, u32(len(s)))
+
 	glyphs := make([dynamic]Shaped_Glyph, allocator)
 	runs := CT.LineGetGlyphRuns(line)
 	for i in 0 ..< CF.ArrayGetCount(runs) {
@@ -126,7 +136,7 @@ coretext_shape :: proc(b: ^CoreText_Backend, face: Face_Id, s: string, allocator
 				glyph   = u32(ids[j]),
 				x       = f32(positions[j].x),
 				y       = -f32(positions[j].y), // CoreText's y points up
-				cluster = u32(indices[j]),
+				cluster = utf16_to_byte[min(int(indices[j]), len(utf16_to_byte) - 1)],
 			})
 		}
 	}

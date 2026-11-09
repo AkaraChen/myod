@@ -23,6 +23,7 @@
         freetype = pkgs.callPackage ./nix/freetype.nix { source = sources.freetype; };
         harfbuzz = pkgs.callPackage ./nix/harfbuzz.nix { source = sources.harfbuzz; inherit freetype; };
         text-shim = pkgs.callPackage ./nix/text-shim.nix { inherit freetype; };
+        libunibreak = pkgs.callPackage ./nix/libunibreak.nix { source = sources.libunibreak; };
         wgpu-native = pkgs.callPackage ./nix/wgpu-native.nix {
           source = sources.wgpu_native;
           inherit system;
@@ -39,6 +40,7 @@
           cp ${freetype}/lib/libfreetype.a $out/
           cp ${harfbuzz}/lib/libharfbuzz.a $out/
           cp ${text-shim}/lib/libmyod_text_shim.a $out/
+          cp ${libunibreak}/lib/libunibreak.a $out/
           chmod 644 $out/*.a
           cd $out && sha256sum *.a > SHA256SUMS
         '';

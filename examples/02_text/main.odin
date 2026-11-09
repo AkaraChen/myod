@@ -1,4 +1,5 @@
-// M2 (step a): DWG text through the CoreText backend, the glyph atlas and Cmd_Glyph_Run.
+// M2: DWG text through either text backend, the glyph atlas and Cmd_Glyph_Run; wrapping,
+// uppercasing and letter spacing.
 //
 // Interactive keys:
 //   1 / 2 / 3 / 4   simulate a 1x / 1.25x / 1.5x / 2x display scale (0 returns to the real scale)
@@ -6,8 +7,9 @@
 //
 // Flags:
 //   --selftest      check that the 2:1 grid holds at every scale (half-width and full-width text
-//                   measure to whole physical pixels, one full-width = two half-width), that fallback
-//                   fonts supply characters DWG lacks, and that emoji land in the color atlas
+//                   measure to whole physical pixels, one full-width = two half-width); wrapping of
+//                   English and Chinese text; uppercasing and letter spacing; and (CoreText) that
+//                   fallback fonts supply characters DWG lacks and emoji land in the color atlas
 package example_text
 
 import "core:fmt"
@@ -23,7 +25,7 @@ import "myod:render"
 import "myod:text"
 import "myod:theme"
 
-PAGE :: [2]f32{960, 760}
+PAGE :: [2]f32{960, 900}
 SCALES :: [4]f32{1, 1.25, 1.5, 2}
 
 App :: struct {
@@ -43,19 +45,21 @@ Role :: struct {
 	size, line:  f32,
 	weight:      text.Weight,
 	sample:      string,
+	uppercase:   bool,
+	tracking:    f32,
 }
 
 ROLES := [?]Role {
-	{"display", 48, 56, .Bold, "myod 大弯勾"},
-	{"page-title", 40, 48, .Bold, "即时模式 · Immediate mode"},
-	{"title", 32, 40, .Bold, "中英混排 Mixed text"},
-	{"section", 24, 32, .Bold, "严格 2:1 网格 · strict 2:1 grid"},
-	{"subsection", 20, 26, .Bold, "字形图集 Glyph atlas"},
-	{"lede", 18, 28, .Regular, "按状态机拆，不按界面拆。Split by state machine."},
-	{"body", 16, 24, .Regular, "正文 body：The quick brown fox 跳过了懒狗 0123456789"},
-	{"compact", 14, 20, .Regular, "compact 紧凑：输入框文字、列表行、次要文字"},
-	{"label", 12, 20, .Bold, "LABEL 标签 · BUTTONS · TABS"},
-	{"metadata", 12, 20, .Regular, "metadata 元数据 · 2026-11-09 21:00"},
+	{"display", 48, 56, .Bold, "myod 大弯勾", false, 0},
+	{"page-title", 40, 48, .Bold, "即时模式 · Immediate mode", false, 0},
+	{"title", 32, 40, .Bold, "中英混排 Mixed text", false, 0},
+	{"section", 24, 32, .Bold, "严格 2:1 网格 · strict 2:1 grid", false, 0},
+	{"subsection", 20, 26, .Bold, "字形图集 Glyph atlas", false, 0},
+	{"lede", 18, 28, .Regular, "按状态机拆，不按界面拆。Split by state machine.", false, 0},
+	{"body", 16, 24, .Regular, "正文 body：The quick brown fox 跳过了懒狗 0123456789", false, 0},
+	{"compact", 14, 20, .Regular, "compact 紧凑：输入框文字、列表行、次要文字", false, 0},
+	{"label", 12, 20, .Bold, "label 标签 · buttons · tabs", true, 0.12},
+	{"metadata", 12, 20, .Regular, "metadata 元数据 · 2026-11-09 21:00", false, 0},
 }
 
 main :: proc() {
@@ -135,7 +139,7 @@ redraw :: proc(data: rawptr) {
 
 	text.begin_frame(&app.text)
 	list := render.make_command_list()
-	draw_page(&list, &app.text, t, scale)
+	draw_page(&list, &app.text, t, scale, f32(size.x) / scale)
 
 	frame, ok := backend.begin_frame(app.gpu, &app.surface, size)
 	if !ok {
@@ -159,7 +163,9 @@ redraw :: proc(data: rawptr) {
 	)
 }
 
-draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32) {
+PARAGRAPH :: "Wrapping follows UAX #14: English breaks between words, while 中文可以在任意两个汉字之间断行，标点遵守避头尾规则。Resize the window and this paragraph reflows — 拖动窗口边缘，这一段会实时重新排版。"
+
+draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, scale: f32, width: f32) {
 	p := t.on_bg
 	x: f32 = 40
 	y: f32 = 32
@@ -167,7 +173,7 @@ draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, s
 	meta := text.Style{size = 12, line_height = 20, weight = .Regular, color = p.faint}
 	for r in ROLES {
 		text.draw(l, ctx, r.name, {x, y}, meta, scale)
-		style := text.Style{size = r.size, line_height = r.line, weight = r.weight, color = p.fg}
+		style := text.Style{size = r.size, line_height = r.line, weight = r.weight, color = p.fg, uppercase = r.uppercase, letter_spacing = r.tracking}
 		if r.name == "metadata" {
 			style.color = p.faint
 		}
@@ -201,6 +207,15 @@ draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, s
 	y += 32
 	text.draw(l, ctx, "emoji", {x, y}, meta, scale)
 	text.draw(l, ctx, "🙂 👍 🎉 🇨🇳 👨‍👩‍👧 — color glyphs in the RGBA atlas", {x + 120, y}, code, scale)
+	y += 40
+
+	// A paragraph that wraps with the window width.
+	text.draw(l, ctx, "wrapping", {x, y}, meta, scale)
+	body := text.Style{size = 16, line_height = 24, weight = .Regular, color = p.fg}
+	max_w := max(width - x - 120 - 40, 80)
+	text.draw_wrapped(l, ctx, PARAGRAPH, {x + 120, y}, body, max_w, scale)
+	size := text.measure_wrapped(ctx, PARAGRAPH, body, max_w, scale)
+	render.line(l, {x + 120 + max_w, y, 1, size.y}, p.border) // the wrap width
 }
 
 // ---- Self-test ----
@@ -223,6 +238,8 @@ run_selftest :: proc(app: ^App) -> bool {
 	if ok {
 		fmt.println("ok   2:1 grid: half-width and full-width text measure to whole, matching pixels at every scale and size")
 	}
+
+	ok = check_wrapping_and_spacing(app) && ok
 
 	if text.BACKEND_NAME != "CoreText" {
 		// Fallback (Fontconfig) and color glyphs (FreeType + PNG) land in M2c for this backend.
@@ -252,5 +269,69 @@ run_selftest :: proc(app: ^App) -> bool {
 	}
 
 	fmt.println("selftest:", "PASS" if ok else "FAIL")
+	return ok
+}
+
+check_wrapping_and_spacing :: proc(app: ^App) -> bool {
+	ok := true
+	ctx := &app.text
+	for scale in SCALES {
+		body := text.Style{size = 16, line_height = 24, weight = .Regular}
+		phys := text.physical_size(16, scale)
+
+		// English: every line fits, and the lines rejoin into the original text.
+		english := "The quick brown fox jumps over the lazy dog again and again until the line has to wrap."
+		max_w := f32(200)
+		lines := text.wrap(ctx, english, body, max_w, scale)
+		rejoined := ""
+		for l in lines {
+			if l.width > max_w * scale {
+				fmt.eprintfln("FAIL %.2fx wrap: line %q is %v px, wider than %v", scale, english[l.start:l.end], l.width, max_w * scale)
+				ok = false
+			}
+			rejoined = fmt.tprintf("%s%s%s", rejoined, " " if rejoined != "" else "", english[l.start:l.end])
+		}
+		if rejoined != english || len(lines) < 3 {
+			fmt.eprintfln("FAIL %.2fx wrap: %d lines rejoin to %q", scale, len(lines), rejoined)
+			ok = false
+		}
+
+		// Chinese: any two characters may break, so 20 characters in 7.5 cells give lines of 7, 7, 6.
+		chinese := "零一二三四五六七八九零一二三四五六七八九"
+		cjk_lines := text.wrap(ctx, chinese, body, 7.5 * phys / scale, scale)
+		counts := make([dynamic]int, context.temp_allocator)
+		for l in cjk_lines {
+			append(&counts, (l.end - l.start) / 3)
+		}
+		if !slice.equal(counts[:], []int{7, 7, 6}) {
+			fmt.eprintfln("FAIL %.2fx wrap: Chinese lines have %v characters, expected [7, 7, 6]", scale, counts[:])
+			ok = false
+		}
+
+		// Uppercasing changes the glyphs, not the clusters; letter spacing skips Chinese.
+		label := text.Style{size = 12, line_height = 20, weight = .Bold}
+		upper := label
+		upper.uppercase = true
+		if text.measure(ctx, "label", upper, scale) != text.measure(ctx, "LABEL", label, scale) {
+			fmt.eprintfln("FAIL %.2fx uppercase: \"label\" uppercased measures differently from \"LABEL\"", scale)
+			ok = false
+		}
+		tracked := label
+		tracked.letter_spacing = 0.12
+		step := math.round(0.12 * text.physical_size(12, scale))
+		plain_w := text.shape(ctx, "ABCD", label, scale).width
+		tracked_w := text.shape(ctx, "ABCD", tracked, scale).width
+		if tracked_w != plain_w + 3 * step {
+			fmt.eprintfln("FAIL %.2fx letter spacing: ABCD is %v px, expected %v", scale, tracked_w, plain_w + 3 * step)
+			ok = false
+		}
+		if text.shape(ctx, "中文", tracked, scale).width != text.shape(ctx, "中文", label, scale).width {
+			fmt.eprintfln("FAIL %.2fx letter spacing: Chinese characters got letter spacing", scale)
+			ok = false
+		}
+	}
+	if ok {
+		fmt.println("ok   wrapping (English and Chinese), uppercasing and letter spacing at every scale")
+	}
 	return ok
 }
