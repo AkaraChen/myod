@@ -29,6 +29,9 @@ Role :: enum u8 {
 	Menu,
 	Menu_Item,
 	Dialog,
+	Table,
+	Row,
+	Cell,
 }
 
 A11y_Flag :: enum u8 {
@@ -61,6 +64,42 @@ A11y_Node :: struct {
 	rect:        Rect,
 	flags:       A11y_Flags,
 	actions:     A11y_Actions,
+	// Position in a list or table: how many rows and columns there are, and where this node is.
+	// -1 where not applicable (a plain list item knows its `row_index` but no columns).
+	row_count:    i32,
+	row_index:    i32,
+	column_count: i32,
+	column_index: i32,
+}
+
+// Overrides the role the declaration heuristics picked, for widgets whose semantics they cannot
+// infer (a list container, a list row). Call it right after the node is declared.
+set_a11y_role :: proc(ctx: ^Context, id: Id, role: Role) {
+	t := &ctx.trees[ctx.cur]
+	#reverse for &n in t.nodes {
+		if n.id == id {
+			n.role = role
+			return
+		}
+	}
+}
+
+// Records where a node sits in a list or table, for screen readers: a list reports its total row
+// count and each row its index (both zero-based). Virtual lists use this so assistive technology
+// knows the list is far larger than the declared rows.
+set_rows :: proc(ctx: ^Context, id: Id, row_count, row_index: int) {
+	if slot, ok := ctx.slot_of[id]; ok {
+		ctx.slots[slot].row_count = i32(row_count)
+		ctx.slots[slot].row_index = i32(row_index)
+	}
+}
+
+// Records a table cell's column as well (see `set_rows`).
+set_cell :: proc(ctx: ^Context, id: Id, column_count, column_index: int) {
+	if slot, ok := ctx.slot_of[id]; ok {
+		ctx.slots[slot].column_count = i32(column_count)
+		ctx.slots[slot].column_index = i32(column_index)
+	}
 }
 
 // The semantic tree of the last pass.
@@ -157,6 +196,9 @@ a11y_build :: proc(ctx: ^Context) {
 			flags   = flags,
 			actions = actions,
 		}
+		slot := &ctx.slots[n.slot]
+		a.row_count, a.row_index = slot.row_count, slot.row_index
+		a.column_count, a.column_index = slot.column_count, slot.column_index
 		if a.name == "" && a.role == .Button {
 			// A button without a name cannot be operated: its description becomes the name.
 			a.name = a.description
@@ -178,7 +220,11 @@ a11y_same :: proc(a: A11y_Node, b: A11y_Node) -> bool {
 		a.value == b.value &&
 		a.rect == b.rect &&
 		a.flags == b.flags &&
-		a.actions == b.actions \
+		a.actions == b.actions &&
+		a.row_count == b.row_count &&
+		a.row_index == b.row_index &&
+		a.column_count == b.column_count &&
+		a.column_index == b.column_index \
 	)
 }
 
@@ -260,6 +306,9 @@ role_name :: proc(r: Role) -> string {
 	case .Menu:        return "menu"
 	case .Menu_Item:   return "menu-item"
 	case .Dialog:      return "dialog"
+	case .Table:       return "table"
+	case .Row:         return "row"
+	case .Cell:        return "cell"
 	}
 	return "none"
 }

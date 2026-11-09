@@ -375,7 +375,7 @@ handle_events :: proc(w: ^Window) -> (changed: bool) {
 				w.mode = .Dark if platform.is_dark_theme() else .Light
 				changed = true
 			}
-		case .Mouse_Move, .Mouse_Down, .Mouse_Up, .Mouse_Leave, .Key_Down, .Key_Up, .Text_Input, .Text_Editing, .Focus_Gained, .Focus_Lost:
+		case .Mouse_Move, .Mouse_Down, .Mouse_Up, .Mouse_Leave, .Wheel, .Key_Down, .Key_Up, .Text_Input, .Text_Editing, .Focus_Gained, .Focus_Lost:
 			if e.kind == .Focus_Gained || e.kind == .Focus_Lost {
 				core.a11y_window_focus(&w.ctx, e.kind == .Focus_Gained)
 			}

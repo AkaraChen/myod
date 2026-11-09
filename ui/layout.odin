@@ -173,12 +173,13 @@ list_item :: proc(o: Container_Options = {}) -> bool {
 	return open_box(o, .Row)
 }
 
-// For now a column that clips its content; scrolling arrives with M6.
+// A scrolling column: the wheel, the keyboard and focus movement scroll its content
+// (core/scroll.odin).
 @(deferred_out = _close)
 scroll :: proc(o: Container_Options = {}) -> bool {
 	opts := o
 	opts.clip = true
-	return open_box(opts, .Column)
+	return open_box(opts, .Column, {.Scroll})
 }
 
 @(deferred_out = _close)
@@ -243,7 +244,7 @@ size_of :: proc(id: Id) -> [2]f32 {
 }
 
 @(private)
-open_box :: proc(o: Container_Options, dir: layout.Direction) -> bool {
+open_box :: proc(o: Container_Options, dir: layout.Direction, flags: core.Node_Flags = {}) -> bool {
 	ctx := core.current()
 	ln := layout.Node {
 		flex_direction = dir,
@@ -264,7 +265,7 @@ open_box :: proc(o: Container_Options, dir: layout.Direction) -> bool {
 		ln.border = 1
 	}
 	item(ctx, &ln, o.width, o.height, o.column_span, o.row_span)
-	return core.open(ctx, key_id(ctx, o.id), ln, box_paint(o.fill, o.border), clip = o.clip)
+	return core.open(ctx, key_id(ctx, o.id), ln, box_paint(o.fill, o.border), clip = o.clip, flags = flags)
 }
 
 // Sets how a node sits in its parent: sizes, flex item properties or grid placement.

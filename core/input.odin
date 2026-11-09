@@ -21,6 +21,9 @@ Input :: struct {
 	// Key presses and text for the focused widget, in order, since the last consumed pass.
 	keys:          [dynamic]platform.Event,
 	window_focus:  bool,
+	// The container each wheel axis is scrolling, and when its last event arrived (scroll.odin).
+	scroll_latch:      [2]Id,
+	scroll_latch_time: u64,
 }
 
 // What happened to one widget since the last consumed pass.
@@ -99,6 +102,7 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 	case .Mouse_Down:
 		in_.mouse = e.pos
 		in_.mods = e.mods
+		in_.scroll_latch = {}
 		if e.button != .Left {
 			return false
 		}
@@ -124,10 +128,27 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		}
 		in_.active = 0
 		return true
+	case .Wheel:
+		in_.mouse = e.pos
+		in_.mouse_inside = true
+		in_.mods = e.mods
+		return scroll_wheel(ctx, e)
 	case .Key_Down:
 		in_.mods = e.mods
 		if e.key == .Tab && e.mods & {.Ctrl, .Alt, .Super} == {} {
 			move_focus(ctx, .Shift in e.mods)
+			if in_.focus != 0 {
+				ensure_visible(ctx, in_.focus)
+			}
+			return true
+		}
+		if in_.focus != 0 && (e.key == .Up || e.key == .Down) {
+			// Inside a list, the arrows move the selection; the list scrolls it into view.
+			if focus_move_in_scroll(ctx, e.key == .Up) {
+				return true
+			}
+		}
+		if scroll_key(ctx, e) {
 			return true
 		}
 		if in_.focus == 0 {
@@ -155,6 +176,7 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 	case .Focus_Lost:
 		in_.window_focus = false
 		in_.active = 0
+		in_.scroll_latch = {}
 		return true
 	}
 	return false

@@ -97,6 +97,7 @@ Node_Flag :: enum u8 {
 	Focusable, // takes keyboard focus on press and with Tab
 	Activate, // Space and Enter click it while focused
 	Disabled, // drawn at the theme's disabled opacity, with everything inside; takes no input
+	Scroll, // a scroll container: wheel, keys and focus scroll its content (scroll.odin)
 }
 Node_Flags :: bit_set[Node_Flag;u8]
 
@@ -132,6 +133,18 @@ Slot :: struct {
 	kept:        [dynamic]i32, // while culled: the slots inside, kept alive
 	state:       rawptr, // the library's per-ID state (`state`)
 	state_type:  typeid,
+	state_free:  proc(rawptr), // releases `state` when the slot is reclaimed
+	// A scroll container's state (core/scroll.odin), in logical pixels.
+	scroll:          [2]f32, // offset of the content; starts at 0
+	scroll_max:      [2]f32, // the largest offset, from the content extent and the viewport
+	scroll_view:     [2]f32, // the viewport (the container's own size) from the last layout
+	scroll_content:  [2]f32, // content extent, when the node knows it itself
+	scroll_override: bool, // use `scroll_content` instead of Taffy's scrollable overflow
+	// Position in a list or table for assistive technology; -1 where not set (a11y.odin).
+	row_count:    i32,
+	row_index:    i32,
+	column_count: i32,
+	column_index: i32,
 }
 
 Tree :: struct {
@@ -187,6 +200,11 @@ Context :: struct {
 	ax:         rawptr, // the platform accessibility adapter (a11y_macos.odin)
 	// An accessibility action changed an interaction result outside the platform event stream.
 	frame_requested: bool,
+	// A widget learned something this pass that changes the next pass's layout (a virtual list
+	// measuring its rows): `view` runs again before anything is presented.
+	unsettled: bool,
+	// Scroll requests from effects (`scroll_to_index`), consumed by the list that owns the ID.
+	scroll_requests: map[Id]int,
 	size:        [2]f32, // the window's logical size this frame
 	frame_start: time.Tick,
 	pass_start:  time.Tick,
@@ -220,6 +238,9 @@ destroy :: proc(ctx: ^Context) {
 	for &s in ctx.slots {
 		delete(s.kept)
 		if s.state != nil {
+			if s.state_free != nil {
+				s.state_free(s.state)
+			}
 			free(s.state)
 		}
 	}
@@ -237,6 +258,7 @@ destroy :: proc(ctx: ^Context) {
 	delete(ctx.reads)
 	delete(ctx.warned)
 	delete(ctx.names)
+	delete(ctx.scroll_requests)
 	delete(ctx.a11y)
 	a11y_prev_destroy(ctx)
 	input_destroy(&ctx.input)
@@ -293,8 +315,15 @@ frame_begin :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, scr
 
 // Starts a pass: `view` declares into a fresh node array.
 pass_begin :: proc(ctx: ^Context) {
+	ctx.unsettled = false
 	begin_pass(ctx, ctx.size)
 	ctx.pass_start = time.tick_now()
+}
+
+// Asks for another pass of this frame: the widget knows the layout it just declared will be
+// different once what it learned from the last layout is applied. Bounded by MAX_PASSES.
+unsettle :: proc(ctx: ^Context) {
+	ctx.unsettled = true
 }
 
 // Ends a pass: lays it out. Returns whether it can be presented; if not (a size `view` read
@@ -517,7 +546,11 @@ last_rect :: proc(ctx: ^Context, id: Id) -> (Rect, bool) {
 // The library's state for a widget ID, created zeroed on first use (`created` is true then) and
 // freed when the ID's slot is reclaimed. Not for app data: that goes into the app's State.
 state :: proc(ctx: ^Context, id: Id, $T: typeid) -> (s: ^T, created: bool) {
-	slot := &ctx.slots[slot_for(ctx, id)]
+	si := slot_for(ctx, id)
+	if si < 0 || int(si) >= len(ctx.slots) {
+		panic("myod: state for an ID with no slot")
+	}
+	slot := &ctx.slots[si]
 	if slot.state == nil {
 		slot.state = new(T)
 		slot.state_type = T
@@ -525,6 +558,13 @@ state :: proc(ctx: ^Context, id: Id, $T: typeid) -> (s: ^T, created: bool) {
 	}
 	assert(slot.state_type == T, "myod: widget state of another type under the same ID")
 	return (^T)(slot.state), false
+}
+
+// Sets what releases the state of `id` when its slot is reclaimed (a state holding allocations).
+set_state_free :: proc(ctx: ^Context, id: Id, free_proc: proc(rawptr)) {
+	if slot, ok := ctx.slot_of[id]; ok {
+		ctx.slots[slot].state_free = free_proc
+	}
 }
 
 @(private)
@@ -616,7 +656,7 @@ slot_for :: proc(ctx: ^Context, id: Id) -> i32 {
 		slot = i32(len(ctx.slots))
 		append(&ctx.slots, Slot{})
 	}
-	ctx.slots[slot] = Slot{id = id, in_use = true, last_frame = ctx.frame, index = -1}
+	ctx.slots[slot] = Slot{id = id, in_use = true, last_frame = ctx.frame, index = -1, row_count = -1, row_index = -1, column_count = -1, column_index = -1}
 	ctx.slot_of[id] = slot
 	return slot
 }
@@ -657,6 +697,12 @@ begin_pass :: proc(ctx: ^Context, size: [2]f32) {
 	clear(&ctx.scopes)
 	clear(&ctx.reads)
 	clear(&ctx.names)
+	for &s in ctx.slots {
+		// A virtual list sets this again while declaring; a list that is no longer declared must
+		// not keep the extent of its last pass.
+		s.scroll_override = false
+		s.row_count, s.row_index, s.column_count, s.column_index = -1, -1, -1, -1
+	}
 	ctx.stats.declared, ctx.stats.culled, ctx.stats.reused, ctx.stats.reused_roots = 0, 0, 0, 0
 
 	// The root: the window's width, and at least its height, so content can grow to fill it.
@@ -725,11 +771,33 @@ resolve :: proc(ctx: ^Context) {
 	results := layout.results(ctx.layout)
 	origin := make([][2]f32, len(t.nodes), context.temp_allocator)
 	s := ctx.scale
+	// Scroll containers first: clamp their offsets against this pass's content extent, so child
+	// origins below see final values.
+	for &n in t.nodes {
+		if .Scroll not_in n.flags {
+			continue
+		}
+		l := results[n.slot]
+		slot := &ctx.slots[n.slot]
+		content := [2]f32{l.content_w, l.content_h}
+		if slot.scroll_override {
+			content = slot.scroll_content
+		}
+		slot.scroll_view = {l.w, l.h}
+		slot.scroll_max = {max(content.x - l.w, 0), max(content.y - l.h, 0)}
+		slot.scroll.x = clamp(slot.scroll.x, 0, slot.scroll_max.x)
+		slot.scroll.y = clamp(slot.scroll.y, 0, slot.scroll_max.y)
+	}
 	for &n, i in t.nodes {
 		l := results[n.slot]
 		o := [2]f32{l.x, l.y}
 		if n.parent >= 0 {
 			o += origin[n.parent]
+			if .Scroll in t.nodes[n.parent].flags {
+				// The parent's content is scrolled: everything inside moves against the offset.
+				sc := ctx.slots[t.nodes[n.parent].slot].scroll
+				o -= sc
+			}
 		}
 		origin[i] = o
 		x0 := math.round(o.x * s) / s
@@ -749,6 +817,9 @@ resolve :: proc(ctx: ^Context) {
 // container became visible.
 @(private)
 stable :: proc(ctx: ^Context) -> bool {
+	if ctx.unsettled {
+		return false
+	}
 	for r in ctx.reads {
 		slot, ok := ctx.slot_of[r.id]
 		if !ok || !ctx.slots[slot].has_rect {
@@ -779,6 +850,9 @@ reclaim :: proc(ctx: ^Context) {
 		delete_key(&ctx.slot_of, s.id)
 		delete(s.kept)
 		if s.state != nil {
+			if s.state_free != nil {
+				s.state_free(s.state)
+			}
 			free(s.state)
 		}
 		layout.clear_slot(ctx.layout, u32(i))

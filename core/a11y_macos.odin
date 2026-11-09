@@ -17,6 +17,10 @@ Ax_Node :: struct {
 	role:       u32,
 	flags:      u32,
 	actions:    u32,
+	row_count:    i32,
+	row_index:    i32,
+	column_count: i32,
+	column_index: i32,
 	x, y, w, h: f64,
 	name:       [^]u8,
 	name_len:   uintptr,
@@ -61,6 +65,8 @@ ax_action :: proc "c" (id: u64, action: u32) {
 			fmt.eprintln("a11y action: focus", id)
 		}
 		set_focus(ctx, Id(id), true)
+		// A screen reader moving to a row scrolls it into view, like the keyboard does.
+		ensure_visible(ctx, Id(id))
 	}
 	// The action changed an interaction result: the app must run a pass to see it.
 	ctx.frame_requested = true
@@ -115,6 +121,10 @@ a11y_publish :: proc(ctx: ^Context, scale: f32, physical: [2]u32) {
 			role    = u32(n.role),
 			flags   = u32(transmute(u8)n.flags),
 			actions = u32(transmute(u8)n.actions),
+			row_count    = n.row_count,
+			row_index    = n.row_index,
+			column_count = n.column_count,
+			column_index = n.column_index,
 			x       = f64(n.rect.x) * f64(scale),
 			y       = f64(n.rect.y) * f64(scale),
 			w       = f64(n.rect.w) * f64(scale),

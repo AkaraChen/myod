@@ -14,6 +14,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 
+import "../core"
 import "../platform"
 
 Task_Id :: distinct u64
@@ -31,6 +32,10 @@ Mailbox :: struct($M: typeid) {
 	timers:    [dynamic]Timer(M),
 	focus:     [256]u8,
 	focus_key: string,
+	scroll:    [256]u8,
+	scroll_key: string,
+	scroll_index: int,
+	scroll_has: bool,
 	next_task: Task_Id,
 }
 
@@ -76,6 +81,7 @@ inbox_send :: proc(inbox: ^Inbox($T), msg: T) {
 Store_Api :: struct($M: typeid) {
 	after:    proc(store: rawptr, delay_ms: u64, msg: ^M),
 	focus:    proc(store: rawptr, key: string),
+	scroll:   proc(store: rawptr, key: string, index: int),
 	add_task: proc(store: rawptr, th: ^thread.Thread, q: ^Task_Queue(M), cancelled: ^bool, data: rawptr) -> Task_Id,
 	cancel:   proc(store: rawptr, id: Task_Id),
 }
@@ -142,6 +148,12 @@ after :: proc(fx: ^Effects($M), delay: time.Duration, msg: M) {
 // Focuses the widget that declared `key` (ARCHITECTURE.md, "API design → 3").
 focus :: proc(fx: ^Effects($M), key: string) {
 	fx.api.focus(fx.store, key)
+}
+
+// Scrolls the virtual list that declared `key` so row `index` is visible, moving as little as
+// possible. Like `focus`, it resolves the key against the last pass.
+scroll_to_index :: proc(fx: ^Effects($M), key: string, index: int) {
+	fx.api.scroll(fx.store, key, index)
 }
 
 @(private)
@@ -214,6 +226,7 @@ store_init :: proc(
 	store.api = Store_Api(M) {
 		after    = api_after(S, M),
 		focus    = api_focus(S, M),
+		scroll   = api_scroll(S, M),
 		add_task = api_add_task(S, M),
 		cancel   = api_cancel(S, M),
 	}
@@ -311,6 +324,12 @@ ops_process :: proc($S: typeid, $M: typeid) -> proc(store: rawptr) -> bool {
 			if s.mail.focus_key != "" {
 				request_focus(s.window, s.mail.focus_key)
 				s.mail.focus_key = ""
+			}
+			if s.mail.scroll_has {
+				s.mail.scroll_has = false
+				if id, ok := core.name_id(&s.window.ctx, s.mail.scroll_key); ok {
+					core.request_scroll_to_index(&s.window.ctx, id, s.mail.scroll_index)
+				}
 			}
 		}
 		clear(&s.mail.queue)
@@ -410,6 +429,17 @@ api_focus :: proc($S: typeid, $M: typeid) -> proc(store: rawptr, key: string) {
 		s := (^Store(S, M))(store)
 		n := min(copy(s.mail.focus[:], key), len(s.mail.focus))
 		s.mail.focus_key = string(s.mail.focus[:n])
+	}
+}
+
+@(private)
+api_scroll :: proc($S: typeid, $M: typeid) -> proc(store: rawptr, key: string, index: int) {
+	return proc(store: rawptr, key: string, index: int) {
+		s := (^Store(S, M))(store)
+		n := min(copy(s.mail.scroll[:], key), len(s.mail.scroll))
+		s.mail.scroll_key = string(s.mail.scroll[:n])
+		s.mail.scroll_index = index
+		s.mail.scroll_has = true
 	}
 }
 

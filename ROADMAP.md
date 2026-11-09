@@ -247,15 +247,15 @@ Layout needs something to lay out, so this milestone also builds the declaration
 
 ### M5: Virtual lists and large data
 
-- [ ] `ui.virtual_list`: returns only the visible range; supports both fixed-height and variable-height rows
-- [ ] Variable-height rows: cache measured heights by row key, with an estimate as fallback; keep the scroll anchor when heights change
-- [ ] Scroll to a given row (the `ui.scroll_to_index` effect)
-- [ ] When focus or arrow keys move the selected row, scroll it into view automatically
-- [ ] Horizontal virtualization: for Data Tables with many columns
-- [ ] Accessibility: report the total row count, total column count, and current position to screen readers; when a screen reader moves to a row outside the viewport, scroll to it automatically
-- [ ] Stick-to-bottom mode: stay at the bottom as new content is appended (log and event-stream lists)
-- [ ] Ownership transfer of task results (see ARCHITECTURE.md, “API design → 5”)
-- [ ] An example pattern that caches sort and filter results by version number
+- [x] `ui.virtual_list`: returns only the visible range; supports both fixed-height and variable-height rows
+- [x] Variable-height rows: cache measured heights by row key, with an estimate as fallback; keep the scroll anchor when heights change
+- [x] Scroll to a given row (the `ui.scroll_to_index` effect)
+- [x] When focus or arrow keys move the selected row, scroll it into view automatically
+- [x] Horizontal virtualization: for Data Tables with many columns
+- [x] Accessibility: report the total row count, total column count, and current position to screen readers; when a screen reader moves to a row outside the viewport, scroll to it automatically
+- [x] Stick-to-bottom mode: stay at the bottom as new content is appended (log and event-stream lists)
+- [x] Ownership transfer of task results (see ARCHITECTURE.md, “API design → 5”)
+- [x] An example pattern that caches sort and filter results by version number
 
 **Acceptance:** `examples/05_million`: a list of one million variable-height rows; data is loaded by a background task, and sorting and filtering run in a task; scrolling stays at 60fps, and CPU is 0 when idle
 

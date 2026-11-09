@@ -29,6 +29,10 @@ mod macos {
         pub role: u32,
         pub flags: u32,
         pub actions: u32,
+        pub row_count: i32,
+        pub row_index: i32,
+        pub column_count: i32,
+        pub column_index: i32,
         pub x: f64,
         pub y: f64,
         pub w: f64,
@@ -56,6 +60,10 @@ mod macos {
         role: u32,
         flags: u32,
         actions: u32,
+        row_count: i32,
+        row_index: i32,
+        column_count: i32,
+        column_index: i32,
         x: f64,
         y: f64,
         w: f64,
@@ -122,6 +130,9 @@ mod macos {
             14 => Role::Menu,
             15 => Role::MenuItem,
             16 => Role::Dialog,
+            17 => Role::Table,
+            18 => Role::Row,
+            19 => Role::Cell,
             _ => Role::Unknown,
         }
     }
@@ -156,6 +167,19 @@ mod macos {
             });
             if !children[i].is_empty() {
                 node.set_children(children[i].clone());
+            }
+            // Zero-based row and column position, for lists and tables (AccessKit's convention).
+            if n.row_count >= 0 {
+                node.set_row_count(n.row_count as usize);
+            }
+            if n.row_index >= 0 {
+                node.set_row_index(n.row_index as usize);
+            }
+            if n.column_count >= 0 {
+                node.set_column_count(n.column_count as usize);
+            }
+            if n.column_index >= 0 {
+                node.set_column_index(n.column_index as usize);
             }
             // A11y_Flag: Disabled, Focused, Focus_Visible, Selected, Checked, Expanded, Pressed,
             // Read_Only.
@@ -258,6 +282,10 @@ mod macos {
                 role: n.role,
                 flags: n.flags,
                 actions: n.actions,
+                row_count: n.row_count,
+                row_index: n.row_index,
+                column_count: n.column_count,
+                column_index: n.column_index,
                 x: n.x,
                 y: n.y,
                 w: n.w,
