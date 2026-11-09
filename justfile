@@ -62,7 +62,7 @@ verify:
 
 # Force a rebuild to confirm the build itself is deterministic
 verify-rebuild:
-    cd third_party && {{nix}} build .#sdl3 .#freetype .#harfbuzz .#text-shim .#libunibreak --rebuild
+    cd third_party && {{nix}} build .#sdl3 .#zlib .#libpng .#freetype .#harfbuzz .#text-shim .#libunibreak --rebuild
 
 # Re-sync the SDL3 and wgpu bindings from Odin's vendor directory
 bindings:

@@ -117,13 +117,13 @@ This is the hardest part. The earlier it starts, the better.
   - [x] The default font, in two weights, Regular and Bold; loaded at runtime from `third_party/fonts/` (or `$MYOD_FONT_DIR`), not compiled into the program (about 17MB per weight). Pinned in `sources.toml` and checked by `just verify`
   - License confirmed: it may be distributed with the library. Releases include the license file for each part (OFL 1.1 for the Latin part, the Alibaba license for Alibaba PuHuiTi 3.0 (阿里巴巴普惠体))
   - [ ] Fast measurement on the 2:1 grid: programming ligatures do not change character width, so width is computed directly as “half-width count × 0.5em + full-width count × 1em”, with no shaping
-- [ ] **Font features**: OpenType features (`calt`, `liga`, `ss01`–`ss20`, `cv01`…, `zero`, `frac`…) and variable font axes (`wght`, `wdth`…), all configurable in the theme's text roles
+- [x] **Font features**: OpenType features (`calt`, `liga`, `ss01`–`ss20`, `cv01`…, `zero`, `frac`…) and variable font axes (`wght`, `wdth`…), configured per style (`Style.features`, `Style.variations`, CSS-like strings) on both backends; `text.load_font` for fonts other than DWG
 - [x] **Shaping cache**: cache shaping results by `(string, face)`, evicting entries unused for 120 frames; features and variation axes join the key when they land. Immediate mode redeclares all text every frame; without a cache, Data Table cannot keep up
-- [ ] **Font fallback**: characters outside DWG (Chinese characters outside the Level 1 and Level 2 sets, emoji, other scripts) go through system fallback: CoreText's fallback list, Fontconfig. Fallback glyphs are vertically centered in the line box; line height uses the primary font's metrics
-- [ ] **Color glyphs**: Apple Color Emoji (sbix, handled directly by CoreText) — done on macOS; Noto Color Emoji (CBDT bitmaps) with the FreeType backend. Drawn in color mode
+- [ ] **Font fallback**: CoreText's own fallback on macOS; on FreeType, grapheme-cluster itemization over a fallback chain (built in for macOS: Apple Color Emoji, Arial Unicode, LastResort; Fontconfig on Linux still to do). Characters outside DWG (Chinese characters outside the Level 1 and Level 2 sets, emoji, other scripts) go through system fallback: CoreText's fallback list, Fontconfig. Fallback glyphs are vertically centered in the line box; line height uses the primary font's metrics
+- [x] **Color glyphs**: Apple Color Emoji through CoreText and through FreeType (libpng; fixed bitmap strikes scaled to size); drawn in color mode. Noto Color Emoji (CBDT) is the same FreeType path, to be checked on Linux
 - [ ] **Sprite glyphs** (`sprite/`): box drawing (U+2500–257F), block elements (U+2580–259F), Braille patterns (U+2800–28FF), Powerline separators. Drawn directly with rectangles, with no gaps between adjacent cells. Spinner also uses this module
 - [ ] **Alpha blending for text**: native on macOS; on Linux, correct coverage with `linear-corrected`
-- [ ] Text styles: size, weight, color, letter spacing, uppercase transform (Latin letters only), underline
+- [ ] Text styles: size, weight, color, letter spacing, uppercase transform (Latin letters only) done; underline still to do
 - [ ] **Dynamic atlas** (`atlas/`):
   - [x] shelf packing (`atlas/`), with dirty-region uploads; single page for now
   - [ ] Cache key: `(source, id, size_px, subpixel_x)`; the source can be a glyph or an SVG; `subpixel_x` is always 0 for SVG
@@ -141,11 +141,12 @@ This is the hardest part. The earlier it starts, the better.
   - [ ] `icons/` provides name constants for Phosphor icons and uses `#load` to embed only the SVGs actually used
   - [ ] Support six weights: thin, light, regular, bold, fill, duotone
 - [x] Text measurement API: `measure(text, style) -> [2]f32` (single line for now; wrapping comes with libunibreak)
-- [ ] Line breaking and grapheme clusters: integrate libunibreak (UAX #14, UAX #29)
-- [ ] Uppercase transform and letter spacing apply only to Latin letters, not to Chinese
+- [x] Line breaking and grapheme clusters: libunibreak (UAX #14, UAX #29) built from source; `text.wrap` / `draw_wrapped` / `measure_wrapped`; grapheme clusters drive FreeType's font fallback
+- [x] Uppercase transform and letter spacing apply only to Latin letters, not to Chinese
 - [ ] Rasterize according to the DPI scale factor; after converting the font size to physical pixels, round to the nearest even number so the half-width advance is always an integer number of pixels; the smallest size, 12px, needs a dedicated check on 1x screens
 
 **Acceptance:**
+- [x] Step c (2026-11-09, macOS arm64): wrapping, uppercasing and letter spacing; OpenType features and variation axes; FreeType fallback and color emoji. `02_text --selftest` checks all of it on both backends
 - [x] Step b (2026-11-09, macOS arm64): FreeType 2.14.3 + HarfBuzz 14.5.1 built from source with Nix (deterministic); `02_text --selftest` passes on both backends with identical 2:1 grid measurements; `just test` runs both
 - [x] Step a (2026-11-09, macOS arm64): `examples/02_text` renders the DESIGN.md type scale in DWG with mixed Chinese and English, Cascadia ligatures, the 2:1 grid, fallback characters and color emoji; `--selftest` checks the 2:1 grid at every scale and size, fallback, and color emoji; visual check passed
 - `examples/02_text`: render a page of mixed Chinese and English content following the type scale in DESIGN.md; sharp at 1x, 2x, and 1.5x, aligned to the 2:1 grid, wrapping automatically with window width. The same page includes Cascadia programming ligatures, a variable font (any variable font, demonstrating continuous change on the `wght` axis), emoji, and Chinese characters outside the Level 1 and Level 2 sets (through fallback)

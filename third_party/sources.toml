@@ -58,3 +58,15 @@ build = "source"
 # A GitHub tag archive; the hash is of the unpacked tree (fetchzip).
 url = "https://github.com/adah1972/libunibreak/archive/refs/tags/libunibreak_7_0.tar.gz"
 hash = "sha256-J+/L5pFudppf0l0Gk/6/Rwz5I59p9Aw11cUEPRPGP/8="
+
+[zlib]
+version = "1.3.2"
+build = "source"
+url = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz"
+hash = "sha256-uzKaCizQJ00FUZ1hxmfAYuBpkNcuEl7i36jeZPARnRY="
+
+[libpng]
+version = "1.6.59"
+build = "source"
+url = "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.xz"
+hash = "sha256-2A3So4o3+APLm2rHsUvW503cO2VHgKg4C9+TUj/bQ4k="

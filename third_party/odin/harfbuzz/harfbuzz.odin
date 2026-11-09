@@ -5,12 +5,16 @@ when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 {
 	@(export) foreign import lib {
 		"../../prebuilt/macos-arm64/libharfbuzz.a",
 		"../../prebuilt/macos-arm64/libfreetype.a",
+		"../../prebuilt/macos-arm64/libpng16.a",
+		"../../prebuilt/macos-arm64/libz.a",
 		"system:c++",
 	}
 } else when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
 	@(export) foreign import lib {
 		"../../prebuilt/linux-x86_64/libharfbuzz.a",
 		"../../prebuilt/linux-x86_64/libfreetype.a",
+		"../../prebuilt/linux-x86_64/libpng16.a",
+		"../../prebuilt/linux-x86_64/libz.a",
 		"system:stdc++",
 		"system:m",
 	}
@@ -18,6 +22,8 @@ when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 {
 	@(export) foreign import lib {
 		"../../prebuilt/linux-arm64/libharfbuzz.a",
 		"../../prebuilt/linux-arm64/libfreetype.a",
+		"../../prebuilt/linux-arm64/libpng16.a",
+		"../../prebuilt/linux-arm64/libz.a",
 		"system:stdc++",
 		"system:m",
 	}

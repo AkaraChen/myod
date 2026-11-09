@@ -5,16 +5,22 @@ when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 {
 	@(export) foreign import shim {
 		"../../prebuilt/macos-arm64/libmyod_text_shim.a",
 		"../../prebuilt/macos-arm64/libfreetype.a",
+		"../../prebuilt/macos-arm64/libpng16.a",
+		"../../prebuilt/macos-arm64/libz.a",
 	}
 } else when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
 	@(export) foreign import shim {
 		"../../prebuilt/linux-x86_64/libmyod_text_shim.a",
 		"../../prebuilt/linux-x86_64/libfreetype.a",
+		"../../prebuilt/linux-x86_64/libpng16.a",
+		"../../prebuilt/linux-x86_64/libz.a",
 	}
 } else when ODIN_OS == .Linux && ODIN_ARCH == .arm64 {
 	@(export) foreign import shim {
 		"../../prebuilt/linux-arm64/libmyod_text_shim.a",
 		"../../prebuilt/linux-arm64/libfreetype.a",
+		"../../prebuilt/linux-arm64/libpng16.a",
+		"../../prebuilt/linux-arm64/libz.a",
 	}
 } else {
 	#panic("myod does not support this platform yet: only macOS arm64, Linux x86_64 and Linux arm64")
@@ -38,8 +44,10 @@ foreign shim {
 	init :: proc(out: ^Library) -> i32 ---
 	done :: proc(library: Library) ---
 	new_face :: proc(library: Library, data: [^]u8, size: i64, out: ^Face) -> i32 ---
+	new_face_file :: proc(library: Library, path: cstring, index: i64, out: ^Face) -> i32 ---
 	done_face :: proc(face: Face) ---
-	set_pixel_size :: proc(face: Face, px: u32) -> i32 ---
+	set_pixel_size :: proc(face: Face, px: u32, scale: ^f64) -> i32 ---
+	char_index :: proc(face: Face, codepoint: u32) -> u32 ---
 	metrics :: proc(face: Face, ascender, descender, height: ^f64) ---
 	render :: proc(face: Face, glyph: u32, subpixel_64: i32, color: i32, out: ^Bitmap) -> i32 ---
 	has_color :: proc(face: Face) -> i32 ---

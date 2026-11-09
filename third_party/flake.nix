@@ -20,7 +20,9 @@
     {
       packages = forAll (system: pkgs: rec {
         sdl3 = pkgs.callPackage ./nix/sdl3.nix { source = sources.sdl3; };
-        freetype = pkgs.callPackage ./nix/freetype.nix { source = sources.freetype; };
+        zlib = pkgs.callPackage ./nix/zlib.nix { source = sources.zlib; };
+        libpng = pkgs.callPackage ./nix/libpng.nix { source = sources.libpng; inherit zlib; };
+        freetype = pkgs.callPackage ./nix/freetype.nix { source = sources.freetype; inherit libpng zlib; };
         harfbuzz = pkgs.callPackage ./nix/harfbuzz.nix { source = sources.harfbuzz; inherit freetype; };
         text-shim = pkgs.callPackage ./nix/text-shim.nix { inherit freetype; };
         libunibreak = pkgs.callPackage ./nix/libunibreak.nix { source = sources.libunibreak; };
@@ -38,6 +40,8 @@
           cp ${sdl3}/lib/libSDL3.a $out/
           cp ${wgpu-native}/lib/libwgpu_native.a $out/
           cp ${freetype}/lib/libfreetype.a $out/
+          cp ${libpng}/lib/libpng16.a $out/
+          cp ${zlib}/lib/libz.a $out/
           cp ${harfbuzz}/lib/libharfbuzz.a $out/
           cp ${text-shim}/lib/libmyod_text_shim.a $out/
           cp ${libunibreak}/lib/libunibreak.a $out/

@@ -8,8 +8,9 @@
 // Flags:
 //   --selftest      check that the 2:1 grid holds at every scale (half-width and full-width text
 //                   measure to whole physical pixels, one full-width = two half-width); wrapping of
-//                   English and Chinese text; uppercasing and letter spacing; and (CoreText) that
-//                   fallback fonts supply characters DWG lacks and emoji land in the color atlas
+//                   English and Chinese text; uppercasing and letter spacing; features and variation
+//                   axes; that fallback fonts supply characters DWG lacks; and that emoji land in the
+//                   color atlas
 package example_text
 
 import "core:fmt"
@@ -274,13 +275,6 @@ run_selftest :: proc(app: ^App) -> bool {
 
 	ok = check_wrapping_and_spacing(app) && ok
 	ok = check_features_and_variations(app) && ok
-
-	if text.BACKEND_NAME != "CoreText" {
-		// Fallback (Fontconfig) and color glyphs (FreeType + PNG) land in M2c for this backend.
-		fmt.println("SKIP fallback and color emoji: not implemented in this backend yet")
-		fmt.println("selftest:", "PASS" if ok else "FAIL")
-		return ok
-	}
 
 	style := text.Style{size = 16, line_height = 24, weight = .Regular}
 	primary := text.face_for(&app.text, style, 2)

@@ -29,20 +29,56 @@ int myod_ft_new_face(FT_Library lib, const unsigned char *data, long size, FT_Fa
 	return FT_New_Memory_Face(lib, data, size, 0, out);
 }
 
+// Opens a font by path, letting FreeType read only what it needs (large fallback fonts such as
+// Apple Color Emoji are hundreds of megabytes).
+int myod_ft_new_face_file(FT_Library lib, const char *path, long index, FT_Face *out) {
+	return FT_New_Face(lib, path, index, out);
+}
+
 void myod_ft_done_face(FT_Face face) {
 	FT_Done_Face(face);
 }
 
-int myod_ft_set_pixel_size(FT_Face face, unsigned int px) {
+// Sets the size in pixels. Color bitmap fonts (sbix, CBDT) only come in fixed strikes: the smallest
+// strike at least `px` tall (or the largest) is selected, and *scale is set to the factor that maps
+// the strike to `px`. Glyph bitmaps and metrics then come at strike size and must be scaled by it.
+int myod_ft_set_pixel_size(FT_Face face, unsigned int px, double *scale) {
+	*scale = 1.0;
+	if (FT_HAS_FIXED_SIZES(face) && FT_HAS_COLOR(face)) {
+		int best = -1;
+		for (int i = 0; i < face->num_fixed_sizes; i++) {
+			FT_Pos ppem = face->available_sizes[i].y_ppem;
+			if (ppem >= (FT_Pos)px * 64) {
+				if (best < 0 || ppem < face->available_sizes[best].y_ppem) best = i;
+			}
+		}
+		if (best < 0) {
+			for (int i = 0; i < face->num_fixed_sizes; i++) {
+				if (best < 0 || face->available_sizes[i].y_ppem > face->available_sizes[best].y_ppem) best = i;
+			}
+		}
+		if (best >= 0) {
+			int err = FT_Select_Size(face, best);
+			if (err) return err;
+			*scale = (double)px / (face->available_sizes[best].y_ppem / 64.0);
+			return 0;
+		}
+	}
 	return FT_Set_Pixel_Sizes(face, 0, px);
 }
 
-// Ascender, descender (positive, below the baseline) and line height for the current size, in pixels.
+// Ascender, descender (positive, below the baseline) and line height for the current size, in pixels
+// (at strike size for color bitmap fonts).
 void myod_ft_metrics(FT_Face face, double *ascender, double *descender, double *height) {
 	FT_Size_Metrics m = face->size->metrics;
 	*ascender = m.ascender / 64.0;
 	*descender = -m.descender / 64.0;
 	*height = m.height / 64.0;
+}
+
+// The glyph index for a code point, or 0 if the font lacks it.
+unsigned int myod_ft_char_index(FT_Face face, unsigned int codepoint) {
+	return FT_Get_Char_Index(face, codepoint);
 }
 
 // Load flags matching Ghostty's FreeType defaults: hinting on, light auto-hinter.
