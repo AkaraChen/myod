@@ -16,12 +16,22 @@ Window :: struct {
 	id:          sdl.WindowID,
 	redraw:      Redraw_Proc,
 	redraw_data: rawptr,
+	// Owned by the rendering backend (e.g. the Metal view on macOS), so it survives device loss.
+	gpu_view:    rawptr,
 }
 
-Event :: enum {
+Event_Kind :: enum {
+	None,
 	Other,
 	Quit,
 	Theme_Changed,
+	Key_Down,
+}
+
+Event :: struct {
+	kind: Event_Kind,
+	// For Key_Down: the key code. Letters are lowercase ASCII, digits are ASCII digits.
+	key:  rune,
 }
 
 @(private)
@@ -71,15 +81,33 @@ set_redraw :: proc(w: ^Window, redraw: Redraw_Proc, data: rawptr) {
 wait_event :: proc() -> Event {
 	e: sdl.Event
 	if !sdl.WaitEvent(&e) {
-		return .Other
+		return {kind = .Other}
 	}
+	return translate(e)
+}
+
+// Returns the next pending event without blocking, or an event of kind None.
+poll_event :: proc() -> Event {
+	e: sdl.Event
+	if !sdl.PollEvent(&e) {
+		return {kind = .None}
+	}
+	return translate(e)
+}
+
+@(private)
+translate :: proc(e: sdl.Event) -> Event {
 	#partial switch e.type {
 	case .QUIT:
-		return .Quit
+		return {kind = .Quit}
 	case .SYSTEM_THEME_CHANGED:
-		return .Theme_Changed
+		return {kind = .Theme_Changed}
+	case .KEY_DOWN:
+		if !e.key.repeat {
+			return {kind = .Key_Down, key = rune(e.key.key)}
+		}
 	}
-	return .Other
+	return {kind = .Other}
 }
 
 // Window size in physical pixels.

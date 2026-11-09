@@ -32,9 +32,18 @@ Frame :: struct {
 @(private)
 g_context: runtime.Context
 
+// Set by the device-lost callback; see device_lost and recover.
+@(private)
+g_device_lost: bool
+
+// Set while shutting down, so an intentional device release is not reported as a loss.
+@(private)
+g_shutting_down: bool
+
 // Creates the GPU device and the surface of the first window.
 init :: proc(window: ^platform.Window) -> (gpu: Gpu, surface: Surface, ok: bool) {
 	g_context = context
+	g_device_lost = false
 
 	gpu.instance = wgpu.CreateInstance(nil)
 	if gpu.instance == nil {
@@ -85,6 +94,16 @@ init :: proc(window: ^platform.Window) -> (gpu: Gpu, surface: Surface, ok: bool)
 		gpu.adapter,
 		&{
 			label = "myod",
+			deviceLostCallbackInfo = {
+				mode = .AllowSpontaneos, // sic: the binding spells it this way
+				callback = proc "c" (device: ^wgpu.Device, reason: wgpu.DeviceLostReason, message: string, userdata1, userdata2: rawptr) {
+					context = g_context
+					if !g_shutting_down {
+						fmt.eprintfln("myod: GPU device lost [%v] %s", reason, message)
+						g_device_lost = true
+					}
+				},
+			},
 			uncapturedErrorCallbackInfo = {
 				callback = proc "c" (device: ^wgpu.Device, type: wgpu.ErrorType, message: string, userdata1, userdata2: rawptr) {
 					context = g_context
@@ -118,6 +137,8 @@ init :: proc(window: ^platform.Window) -> (gpu: Gpu, surface: Surface, ok: bool)
 }
 
 shutdown :: proc(gpu: ^Gpu, surface: ^Surface) {
+	g_shutting_down = true
+	defer g_shutting_down = false
 	wgpu.SurfaceRelease(surface.surface)
 	wgpu.QueueRelease(gpu.queue)
 	wgpu.DeviceRelease(gpu.device)
@@ -170,6 +191,15 @@ begin_frame :: proc(gpu: Gpu, surface: ^Surface, size: [2]u32) -> (frame: Frame,
 	if size.x == 0 || size.y == 0 {
 		return
 	}
+
+	// Touch the device before the surface: on a lost device, creating an encoder reports the loss
+	// through the device-lost callback, while surface calls abort the process in wgpu-native.
+	frame.encoder = wgpu.DeviceCreateCommandEncoder(gpu.device, nil)
+	if g_device_lost {
+		wgpu.CommandEncoderRelease(frame.encoder)
+		return {}, false
+	}
+
 	if size.x != surface.config.width || size.y != surface.config.height {
 		surface.config.width = size.x
 		surface.config.height = size.y
@@ -184,16 +214,17 @@ begin_frame :: proc(gpu: Gpu, surface: ^Surface, size: [2]u32) -> (frame: Frame,
 			wgpu.TextureRelease(st.texture)
 		}
 		wgpu.SurfaceConfigure(surface.surface, &surface.config)
-		return
+		wgpu.CommandEncoderRelease(frame.encoder)
+		return {}, false
 	case .Occluded:
-		return
+		wgpu.CommandEncoderRelease(frame.encoder)
+		return {}, false
 	case .Error:
 		fmt.panicf("myod: failed to get the surface texture: %v", st.status)
 	}
 
 	frame.texture = st.texture
 	frame.view = wgpu.TextureCreateView(st.texture, nil)
-	frame.encoder = wgpu.DeviceCreateCommandEncoder(gpu.device, nil)
 	ok = true
 	return
 }
@@ -224,4 +255,28 @@ encode_color :: proc(surface: Surface, c: [3]u8) -> [4]f32 {
 @(private)
 srgb_to_linear :: proc(v: f32) -> f32 {
 	return v / 12.92 if v <= 0.04045 else math.pow((v + 0.055) / 1.055, 2.4)
+}
+
+// Reports whether the GPU device was lost (driver update, GPU reset, external GPU unplugged).
+// After a loss, call recover and recreate every GPU resource. Nothing lives only on the GPU,
+// so the next frame draws normally (see ARCHITECTURE.md, "Rendering backend").
+//
+// wgpu-native reports a loss when an operation on the lost device fails, not when the device
+// goes away: the frame that hits the loss is dropped, and the next frame recovers.
+device_lost :: proc(gpu: Gpu) -> bool {
+	wgpu.InstanceProcessEvents(gpu.instance)
+	return g_device_lost
+}
+
+// Releases the lost device and creates a new one, along with a new surface for the window.
+recover :: proc(gpu: ^Gpu, surface: ^Surface, window: ^platform.Window) -> bool {
+	shutdown(gpu, surface)
+	ok: bool
+	gpu^, surface^, ok = init(window)
+	return ok
+}
+
+// Destroys the device on purpose, to exercise the device-loss path.
+debug_lose_device :: proc(gpu: Gpu) {
+	wgpu.DeviceDestroy(gpu.device)
 }

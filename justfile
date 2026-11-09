@@ -26,6 +26,12 @@ build example *args:
     mkdir -p build
     odin build examples/{{example}} {{odin_flags}} -out:build/{{example}} {{args}}
 
+# Run the automated self-tests (offscreen rendering with pixel checks)
+test:
+    mkdir -p build
+    odin build examples/01_rects {{odin_flags}} -out:build/01_rects
+    ./build/01_rects --selftest
+
 # Type-check every example
 check:
     for d in examples/*/; do echo "check $d"; odin check "$d" {{odin_flags}}; done

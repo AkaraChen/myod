@@ -561,6 +561,8 @@ Layers are drawn in layer stack order, and within a layer in declaration order (
 
 **Device loss**: when a driver updates, the GPU resets or an external GPU is unplugged, all GPU resources become invalid. **No data lives only on the GPU**: glyphs can be re-rasterized, charts can be regenerated, and images keep their source data on the CPU side. After the device is recreated, the next frame draws as usual.
 
+wgpu-native reports a loss only when an operation on the lost device fails, and surface calls on a lost device abort the process. So each frame touches the device first (it creates the command encoder before acquiring the surface texture): the frame that hits the loss is dropped, and the next frame recovers. `examples/01_rects --selftest` exercises this path by destroying the device on purpose.
+
 **Presentation**:
 
 - Present mode is FIFO (vsync): no tearing, lowest power use. Rendering is event-driven: with no input, nothing is drawn at all
@@ -579,6 +581,14 @@ Layers are drawn in layer stack order, and within a layer in declaration order (
 ---
 
 ## Testing
+
+**Pixel self-tests.** The renderer can draw into an offscreen texture and read it back (`backend.capture`). `examples/01_rects --selftest` (`just test`) renders the component page in both themes at 1x, 1.25x, 1.5x and 2x and checks:
+
+- **Probes**: known pixels match the DESIGN.md tokens exactly
+- **No in-between colors**: every pixel is a color the page can produce (tokens, plus disabled composites). Any other color means an edge was blended, i.e. it is blurry
+- **Uniform hairlines**: every separator has the expected physical thickness. Without anti-aliasing, a missing pixel snap does not create in-between colors, it creates lines that are 1px in one place and 2px in another, so thickness is checked directly
+- **Device loss**: destroy the device, detect the loss, recover, and render correctly again
+
 
 Modeled on React Testing Library: **test the way users actually use the app**. The ghost rendering pipeline is itself a test environment that needs no window: input, messages, view and layout need no GPU; only the final present does.
 

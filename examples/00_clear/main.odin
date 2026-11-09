@@ -51,13 +51,12 @@ main :: proc() {
 	redraw(&app)
 
 	for {
-		switch platform.wait_event() {
+		#partial switch platform.wait_event().kind {
 		case .Quit:
 			return
 		case .Theme_Changed:
 			app.dark = platform.is_dark_theme()
 			redraw(&app)
-		case .Other:
 		}
 		free_all(context.temp_allocator)
 	}

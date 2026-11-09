@@ -76,22 +76,29 @@ Each milestone uses **a runnable demo** as its acceptance criterion, placed unde
 
 ### M1: Rectangle renderer
 
-- [ ] Define the first version of the `Draw_Command` union in `render/`: `Cmd_Rect`, `Cmd_Clip_Push`, `Cmd_Clip_Pop`
-- [ ] Instanced rendering: one quad, one instance per rectangle, drawn in a single draw call
-- [ ] A single pipeline only: each instance = position + UV + color + mode flag; solid rectangles sample a white pixel in the atlas
-- [ ] **Two atlas textures bound at once**: R8 (mask mode: sampled value × color) and RGBA8 (color mode: output the texture color directly), selected by the instance's mode flag
-- [ ] Borders: split into 4 solid rectangles, or carry a border width in the instance; must support 1px and 2px (menus)
-- [ ] **Pixel alignment**: logical coordinates × scale factor, rounded to physical pixels; border width at least 1 physical pixel
-- [ ] **Choose the surface format per platform**: non-`*Srgb` on macOS (gamma-space blending), `*Srgb` on Linux (linear-space blending)
-- [ ] **Semi-transparent tokens pre-resolved to opaque colors**: when the theme loads, compute “the color after compositing over bg / bg-solid”
-- [ ] Label all wgpu objects; `MYOD_DEBUG_RENDER=1` debug overlay
-- [ ] Implement clipping with scissor rects
-- [ ] Split batches when the clip changes
-- [ ] Allocate the command array each frame with Odin's `context.temp_allocator`
-- [ ] Put the color tokens from DESIGN.md into `theme` (light and dark sets)
-- [ ] Device loss: recreate the device and all GPU resources, and draw normally on the next frame
+- [x] Define the first version of the `Draw_Command` union in `render/`: `Cmd_Rect`, `Cmd_Clip_Push`, `Cmd_Clip_Pop`
+- [x] Instanced rendering: one quad, one instance per rectangle, drawn in a single draw call
+- [x] A single pipeline only: each instance = position + UV + color + mode flag; solid rectangles sample a white pixel in the atlas
+- [x] **Two atlas textures bound at once**: R8 (mask mode: sampled value × color) and RGBA8 (color mode: output the texture color directly), selected by the instance's mode flag. For now both are 256×256 and hold only the white texel; M2 makes them paged
+- [x] Borders: a bordered rectangle becomes up to five non-overlapping quads (fill + four edges), so translucent fills and borders never blend over each other; 1px and 2px both supported
+- [x] **Pixel alignment**: logical coordinates × scale factor, rounded to physical pixels; border width at least 1 physical pixel. Two snapping modes (`render.Snap`): `Edges` for layout boxes (each edge snapped independently) and `Size` for hairlines (origin snapped, thickness rounded separately, so equal logical lines get equal physical thickness)
+- [x] **Choose the surface format per platform**: non-`*Srgb` on macOS (gamma-space blending), `*Srgb` on Linux (linear-space blending)
+- [x] **Semi-transparent tokens pre-resolved to opaque colors**: `theme/` resolves every token over bg and over bg-solid
+- [x] Label all wgpu objects
+- [ ] `MYOD_DEBUG_RENDER=1` debug overlay: needs text, moved to M2. Until then, `01_rects` shows the render stats in the window title
+- [x] Implement clipping with scissor rects
+- [x] Split batches when the clip changes
+- [x] Allocate the command array each frame with Odin's `context.temp_allocator`
+- [x] Put the color tokens from DESIGN.md into `theme` (light and dark sets)
+- [x] Device loss: recreate the device and all GPU resources, and draw normally on the next frame (see ARCHITECTURE.md, “Rendering backend” for how wgpu-native reports losses)
+- [x] Offscreen capture with CPU readback (`backend.capture`), used by the pixel self-test
 
 **Acceptance:** `examples/01_rects`: draw the static look of buttons, toggles, checkboxes, and progress bars with token colors (no text yet); borders are sharp, not blurry, at 1x and 2x and at simulated 1.25x and 1.5x scale. On macOS and Linux, color-picked values match the DESIGN.md tokens exactly. 10,000 rectangles stay at 60fps+.
+
+- [x] macOS arm64, automated (`just test`), 2026-11-09: both themes at 1x / 1.25x / 1.5x / 2x — all probes exact, no in-between colors, uniform hairlines; device loss detected and recovered
+- [x] macOS arm64, 10,000 rectangles: 60fps (capped by the 60Hz display); renderer CPU time 2.4ms per frame in a debug build, 0.9ms with `-o:speed`
+- [ ] macOS arm64, visual check of the interactive page
+- [ ] Linux x86_64
 
 **Reading:** wgpu instanced drawing and vertex buffer layout; WGSL basics
 
@@ -122,6 +129,7 @@ This is the hardest part. The earlier it starts, the better.
   - [ ] Cache key: `(source, id, size_px, subpixel_x)`; the source can be a glyph or an SVG; `subpixel_x` is always 0 for SVG
   - [ ] Grows by page; when full, evict the least recently used page as a whole; respect the GPU memory budget
   - [ ] `MYOD_DEBUG_ATLAS=1`: draw the atlas on screen
+- [ ] `MYOD_DEBUG_RENDER=1` debug overlay (moved from M1, now that text exists): draw calls, instances, atlas pages, frame time
 - [ ] Add `Cmd_Glyph_Run`; the backend draws glyph quads with the same instanced pipeline (sampling the atlas texture)
 - [ ] **SVG icons** (`svg/`, `icons/`):
   - [ ] Write Odin bindings for nanosvg (parsing + rasterization)
