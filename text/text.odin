@@ -413,10 +413,17 @@ draw_glyphs :: proc(list: ^render.Command_List, ctx: ^Context, sh: Shaped, start
 		if e.empty {
 			continue
 		}
+		y := i32(math.round(g.y)) + e.offset.y
+		if e.kind == .Color {
+			// Emoji bitmaps carry inconsistent vertical placement across fonts and backends
+			// (Apple's sbix relies on another table that FreeType ignores). Center them on the
+			// midpoint of the primary font's ascent and descent instead, as Ghostty centers emoji.
+			y = i32(math.round(-(sh.ascent - sh.descent) / 2 - f32(e.texel[3]) / 2))
+		}
 		append(&quads, render.Glyph_Quad {
 			atlas = e.kind,
 			texel = e.texel,
-			offset = {i32(ix) + e.offset.x, i32(math.round(g.y)) + e.offset.y},
+			offset = {i32(ix) + e.offset.x, y},
 		})
 	}
 	append(&list.commands, render.Cmd_Glyph_Run{origin = {pos.x, baseline / scale}, color = style.color, quads = quads[:]})

@@ -127,6 +127,31 @@ descriptor_with :: proc(base: CT.FontDescriptorRef, features: []Feature, variati
 	return CT.FontDescriptorCreateCopyWithAttributes(base, attrs)
 }
 
+// Ascent and descent from the OS/2 typo values when the font has them, like the FreeType backend,
+// so line-box centering matches across backends; otherwise CoreText's (hhea) values.
+@(private)
+typo_metrics :: proc(font: CT.FontRef) -> (ascent, descent: f32) {
+	ascent = f32(CT.FontGetAscent(font))
+	descent = f32(CT.FontGetDescent(font))
+	data := CT.FontCopyTable(font, CT.FontTableTag(tag_u32({'O', 'S', '/', '2'})), {})
+	if data == nil {
+		return
+	}
+	defer CF.Release(CF.TypeRef(data))
+	if CF.DataGetLength(data) < 72 {
+		return
+	}
+	bytes := ([^]u8)(CF.DataGetBytePtr(data))
+	be16 :: proc(p: [^]u8) -> i16 {
+		return i16(u16(p[0]) << 8 | u16(p[1]))
+	}
+	upm := f32(CT.FontGetUnitsPerEm(font))
+	size := f32(CT.FontGetSize(font))
+	ascent = f32(be16(bytes[68:])) * size / upm
+	descent = -f32(be16(bytes[70:])) * size / upm
+	return
+}
+
 // Finds or registers the face for a CTFont that CoreText picked for a run.
 @(private)
 face_for_ct_font :: proc(b: ^CoreText_Backend, font: CT.FontRef, size: f32) -> Face_Id {
@@ -142,10 +167,8 @@ face_for_ct_font :: proc(b: ^CoreText_Backend, font: CT.FontRef, size: f32) -> F
 
 coretext_shape :: proc(b: ^CoreText_Backend, face: Face_Id, s: string, allocator := context.allocator) -> Shaped {
 	f := b.faces[face]
-	out := Shaped {
-		ascent  = f32(CT.FontGetAscent(f.font)),
-		descent = f32(CT.FontGetDescent(f.font)),
-	}
+	out := Shaped{}
+	out.ascent, out.descent = typo_metrics(f.font)
 	if len(s) == 0 {
 		return out
 	}

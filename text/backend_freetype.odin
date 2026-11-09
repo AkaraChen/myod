@@ -27,9 +27,13 @@ FreeType_Backend :: struct {
 // A font is either loaded into memory (its data must outlive its faces) or opened by path.
 @(private)
 FreeType_Font :: struct {
-	data: []u8,
-	path: string,
+	data:   []u8,
+	path:   string,
+	failed: bool, // a path-based font FreeType could not open; skipped from then on
 }
+
+@(private)
+NO_FACE :: max(Face_Id)
 
 @(private)
 FreeType_Face :: struct {
@@ -50,6 +54,8 @@ FreeType_Face :: struct {
 @(private)
 MACOS_FALLBACK_FONTS :: [?]string {
 	"/System/Library/Fonts/Apple Color Emoji.ttc",
+	// Not PingFang: CoreText finds CJK extension characters (e.g. 𪚥) in a PingFang collection in a
+	// private framework, but FreeType reports its format as unknown (error 0x2).
 	"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
 	"/System/Library/Fonts/LastResort.otf",
 }
@@ -123,12 +129,17 @@ freetype_face :: proc(b: ^FreeType_Backend, font: Font_Id, size: f32, features, 
 			return Face_Id(i)
 		}
 	}
-	f := FreeType_Face{size = size, base = font, features = strings.clone(features), variations = strings.clone(variations)}
-	ok: bool
-	f.face, ok = open_ft_face(b, font)
-	if !ok {
-		panic("myod: FreeType failed to open a font")
+	if b.fonts[font].failed {
+		return NO_FACE
 	}
+	ft_face, ok := open_ft_face(b, font)
+	if !ok {
+		// Loaded fonts were checked by freetype_load_font; only path-based fallback fonts get here.
+		assert(b.fonts[font].data == nil, "myod: FreeType failed to open a font it opened before")
+		b.fonts[font].failed = true
+		return NO_FACE
+	}
+	f := FreeType_Face{face = ft_face, size = size, base = font, features = strings.clone(features), variations = strings.clone(variations)}
 	strike_scale: f64
 	ft.set_pixel_size(f.face, u32(size), &strike_scale)
 	f.scale = f32(strike_scale)
@@ -166,7 +177,7 @@ face_for_rune :: proc(b: ^FreeType_Backend, primary: Face_Id, r: rune) -> Face_I
 	size := b.faces[primary].size
 	for font in b.fallback {
 		fb := freetype_face(b, font, size, "", "")
-		if ft.char_index(b.faces[fb].face, u32(r)) != 0 {
+		if fb != NO_FACE && ft.char_index(b.faces[fb].face, u32(r)) != 0 {
 			return fb
 		}
 	}

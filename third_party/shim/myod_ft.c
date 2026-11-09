@@ -6,6 +6,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_MULTIPLE_MASTERS_H
+#include FT_TRUETYPE_TABLES_H
 
 #include <string.h>
 
@@ -68,12 +69,19 @@ int myod_ft_set_pixel_size(FT_Face face, unsigned int px, double *scale) {
 }
 
 // Ascender, descender (positive, below the baseline) and line height for the current size, in pixels
-// (at strike size for color bitmap fonts).
+// (at strike size for color bitmap fonts). Ascender and descender come from the OS/2 typo values
+// when the font has them, unrounded, so both text backends agree (see text/text.odin); otherwise
+// from FreeType's size metrics.
 void myod_ft_metrics(FT_Face face, double *ascender, double *descender, double *height) {
 	FT_Size_Metrics m = face->size->metrics;
 	*ascender = m.ascender / 64.0;
 	*descender = -m.descender / 64.0;
 	*height = m.height / 64.0;
+	TT_OS2 *os2 = (TT_OS2 *)FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+	if (os2 && os2->version != 0xFFFF && FT_IS_SCALABLE(face)) {
+		*ascender = FT_MulFix(os2->sTypoAscender, m.y_scale) / 64.0;
+		*descender = -FT_MulFix(os2->sTypoDescender, m.y_scale) / 64.0;
+	}
 }
 
 // The glyph index for a code point, or 0 if the font lacks it.
