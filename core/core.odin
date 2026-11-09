@@ -92,8 +92,13 @@ Paint :: union {
 
 Node_Flag :: enum u8 {
 	Culled, // a placeholder for a container outside the visible area
-	Clip,   // clips its descendants to its rect
+	Clip, // clips its descendants to its rect
+	Hit, // takes the pointer: hover, press, click (input phase)
+	Focusable, // takes keyboard focus on press and with Tab
+	Activate, // Space and Enter click it while focused
+	Disabled, // drawn at the theme's disabled opacity, with everything inside; takes no input
 }
+Node_Flags :: bit_set[Node_Flag;u8]
 
 Node :: struct {
 	id:           Id,
@@ -107,7 +112,7 @@ Node :: struct {
 	last_child:   i32,
 	next_sibling: i32,
 	child_count:  i32,
-	flags:        bit_set[Node_Flag;u8],
+	flags:        Node_Flags,
 }
 
 Slot :: struct {
@@ -171,6 +176,10 @@ Context :: struct {
 	stats:      Stats,
 	odin:       runtime.Context, // for the measure callback
 	no_culling: bool, // for tests: lay out everything
+	size:        [2]f32, // the window's logical size this frame
+	frame_start: time.Tick,
+	pass_start:  time.Tick,
+	input:       Input,
 }
 
 @(private)
@@ -215,6 +224,7 @@ destroy :: proc(ctx: ^Context) {
 	delete(ctx.free_slots)
 	delete(ctx.reads)
 	delete(ctx.warned)
+	input_destroy(&ctx.input)
 	layout.destroy(ctx.layout)
 	ctx^ = {}
 }
@@ -227,11 +237,31 @@ current :: proc(loc := #caller_location) -> ^Context {
 
 // Runs one frame: `view` (more than once if a ghost pass is needed), layout, then draw commands
 // into `list`. `size` is the logical size of the window; `scroll` offsets the visible area.
+// The frame loop of ui/ drives the same phases one by one (frame_begin, pass_begin, pass_end,
+// frame_end), with the input phase before them.
 frame :: proc(ctx: ^Context, view: View_Proc, data: rawptr, size: [2]f32, scale: f32, t: theme.Theme, list: ^render.Command_List, scroll := [2]f32{}) {
-	start := time.tick_now()
+	outer := frame_begin(ctx, size, scale, t, scroll)
+	for pass in 0 ..< MAX_PASSES {
+		pass_begin(ctx)
+		view(data)
+		if pass_end(ctx) {
+			break
+		}
+		if pass == MAX_PASSES - 1 {
+			fmt.eprintln("myod: layout did not settle after", MAX_PASSES, "passes; presenting the last one")
+		}
+	}
+	consume(ctx)
+	frame_end(ctx, list, outer)
+}
+
+// Starts a frame: makes `ctx` current (until frame_end) and returns the context that was current.
+frame_begin :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, scroll := [2]f32{}) -> (outer: ^Context) {
+	ctx.frame_start = time.tick_now()
 	ctx.frame += 1
 	ctx.theme = t
 	ctx.odin = context
+	ctx.size = size
 	if scale != ctx.scale {
 		// Text measures differently at another scale: no cached layout is valid any more.
 		for &s in ctx.slots {
@@ -240,36 +270,79 @@ frame :: proc(ctx: ^Context, view: View_Proc, data: rawptr, size: [2]f32, scale:
 		ctx.scale = scale
 	}
 	ctx.viewport = {scroll.x, scroll.y, size.x, size.y}
-	outer := current_ctx
+	outer = current_ctx
 	current_ctx = ctx
-	defer current_ctx = outer
-
 	ctx.stats = {}
-	for pass in 0 ..< MAX_PASSES {
-		begin_pass(ctx, size)
-		t0 := time.tick_now()
-		view(data)
-		ctx.stats.view_time += time.tick_since(t0)
-		end_pass(ctx)
-		t1 := time.tick_now()
-		run_layout(ctx, size)
-		resolve(ctx)
-		ctx.stats.layout_time += time.tick_since(t1)
-		ctx.stats.passes += 1
-		if stable(ctx) {
-			break
-		}
-		if pass == MAX_PASSES - 1 {
-			fmt.eprintln("myod: layout did not settle after", MAX_PASSES, "passes; presenting the last one")
-		}
-	}
+	return
+}
+
+// Starts a pass: `view` declares into a fresh node array.
+pass_begin :: proc(ctx: ^Context) {
+	begin_pass(ctx, ctx.size)
+	ctx.pass_start = time.tick_now()
+}
+
+// Ends a pass: lays it out. Returns whether it can be presented; if not (a size `view` read
+// changed, or a culled container became visible), `view` must run again.
+pass_end :: proc(ctx: ^Context) -> bool {
+	ctx.stats.view_time += time.tick_since(ctx.pass_start)
+	end_pass(ctx)
+	t1 := time.tick_now()
+	run_layout(ctx, ctx.size)
+	resolve(ctx)
+	ctx.stats.layout_time += time.tick_since(t1)
+	ctx.stats.passes += 1
+	return stable(ctx)
+}
+
+// Generates the draw commands of the last pass and restores the context that was current before
+// frame_begin.
+frame_end :: proc(ctx: ^Context, list: ^render.Command_List, outer: ^Context) {
 	t2 := time.tick_now()
 	draw(ctx, list)
 	ctx.stats.draw_time = time.tick_since(t2)
 	if ctx.frame % 16 == 0 {
 		reclaim(ctx)
 	}
-	ctx.stats.frame_time = time.tick_since(start)
+	ctx.stats.frame_time = time.tick_since(ctx.frame_start)
+	current_ctx = outer
+}
+
+// Lays the last pass out again at another window size and draws it, without running `view`: for
+// redraws from inside the platform's event callback while a window edge is being dragged, when the
+// app's loop cannot run.
+relayout :: proc(ctx: ^Context, size: [2]f32, scale: f32, t: theme.Theme, list: ^render.Command_List) {
+	tr := &ctx.trees[ctx.cur]
+	if len(tr.nodes) == 0 {
+		return
+	}
+	outer := current_ctx
+	current_ctx = ctx
+	defer current_ctx = outer
+	ctx.odin = context
+	ctx.theme = t
+	if scale != ctx.scale {
+		for &s in ctx.slots {
+			s.layout_hash = 0
+		}
+		ctx.scale = scale
+	}
+	ctx.size = size
+	ctx.viewport.w, ctx.viewport.h = size.x, size.y
+	root := &tr.lnodes[0]
+	root.size = {{size.x, .Px}, {}}
+	root.min_size = {{}, {size.y, .Px}}
+	tr.nodes[0].hash = mix(tr.nodes[0].hash, u64(transmute(u32)size.x) << 32 | u64(transmute(u32)size.y))
+	run_layout(ctx, size)
+	resolve(ctx)
+	draw(ctx, list)
+}
+
+// Makes `ctx` the current context (for the ui/ window stack); returns the previous one.
+set_current :: proc(ctx: ^Context) -> ^Context {
+	outer := current_ctx
+	current_ctx = ctx
+	return outer
 }
 
 // ---- Declaration ----
@@ -326,10 +399,11 @@ parent_direction :: proc(ctx: ^Context) -> (dir: layout.Direction, grid: bool) {
 
 // Opens a container. Returns false when it is culled: its content must not be declared, but
 // `close` must still be called.
-open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid: Grid_Tracks = {}, clip := false, cull := true, label := "") -> bool {
+open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid: Grid_Tracks = {}, clip := false, cull := true, label := "", flags: Node_Flags = {}) -> bool {
 	index := add_node(ctx, id, style, paint, grid, label)
 	t := &ctx.trees[ctx.cur]
 	n := &t.nodes[index]
+	n.flags = flags
 	if clip {
 		n.flags += {.Clip}
 	}
@@ -369,10 +443,11 @@ close :: proc(ctx: ^Context) {
 }
 
 // Declares a node without children. `measured` leaves are sized by the text measure callback.
-leaf :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, measured := false, label := "") -> i32 {
+leaf :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, measured := false, label := "", flags: Node_Flags = {}) -> i32 {
 	s := style
 	s.measure = 1 if measured else 0
 	index := add_node(ctx, id, s, paint, {}, label)
+	ctx.trees[ctx.cur].nodes[index].flags = flags
 	finish(ctx, index)
 	return index
 }
@@ -724,8 +799,9 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 		return
 	}
 	scroll := [2]f32{ctx.viewport.x, ctx.viewport.y}
-	// The surface each node sits on, for translucent tokens.
+	// The surface each node sits on, for translucent tokens, and the opacity it is drawn at.
 	on_solid := make([]bool, n, context.temp_allocator)
+	alpha := make([]f32, n, context.temp_allocator)
 	clips := make([dynamic]i32, 0, 16, context.temp_allocator) // end index of each open clip
 	for i := 0; i < n; i += 1 {
 		for len(clips) > 0 && clips[len(clips) - 1] <= i32(i) {
@@ -734,6 +810,11 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 		}
 		node := &t.nodes[i]
 		solid := on_solid[node.parent] if node.parent >= 0 else false
+		a := alpha[node.parent] if node.parent >= 0 else 1
+		if .Disabled in node.flags {
+			a *= ctx.theme.disabled_alpha
+		}
+		alpha[i] = a
 		visible := intersects(node.rect, ctx.viewport)
 		if !visible && .Clip in node.flags {
 			i = int(node.end) - 1 // nothing inside can show
@@ -741,7 +822,12 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 		}
 		r := Rect{node.rect.x - scroll.x, node.rect.y - scroll.y, node.rect.w, node.rect.h}
 		if visible {
-			solid = paint(ctx, list, node.paint, r, solid)
+			solid = paint(ctx, list, node.paint, r, solid, a)
+			if node.id == ctx.input.focus && ctx.input.focus_visible {
+				// The focus ring: 2px of fg, 1px outside the widget (DESIGN.md, "Focus ring").
+				ring := Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6}
+				render.bordered(list, ring, color(ctx, .Fg, solid), 2)
+			}
 		}
 		on_solid[i] = solid
 		if .Clip in node.flags {
@@ -754,9 +840,9 @@ draw :: proc(ctx: ^Context, list: ^render.Command_List) {
 	}
 }
 
-// Draws one node's paint; returns the surface its children sit on.
+// Draws one node's paint at opacity `a`; returns the surface its children sit on.
 @(private)
-paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_solid: bool) -> bool {
+paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_solid: bool, a: f32 = 1) -> bool {
 	switch v in p {
 	case Paint_Box:
 		solid := on_solid
@@ -765,16 +851,16 @@ paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_s
 		} else if v.fill == .Bg {
 			solid = false
 		}
-		fill := color(ctx, v.fill, on_solid)
+		fill := fade(color(ctx, v.fill, on_solid), a)
 		if v.border != .None && v.border_width > 0 {
-			render.bordered(list, r, color(ctx, v.border, on_solid), v.border_width, fill)
+			render.bordered(list, r, fade(color(ctx, v.border, on_solid), a), v.border_width, fill)
 		} else if v.fill != .None {
 			render.fill(list, r, fill)
 		}
 		return solid
 	case Paint_Text:
 		style := v.style
-		style.color = color(ctx, v.color, on_solid)
+		style.color = fade(color(ctx, v.color, on_solid), a)
 		if v.wrap {
 			text.draw_wrapped(list, ctx.text, v.s, {r.x, r.y}, style, r.w + 0.5 / ctx.scale, ctx.scale)
 		} else {
@@ -787,11 +873,19 @@ paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_s
 		} else {
 			line.h = v.thickness
 		}
-		render.line(list, line, color(ctx, v.color, on_solid))
+		render.line(list, line, fade(color(ctx, v.color, on_solid), a))
 	case Paint_Icon:
-		text.draw_icon(list, ctx.text, v.icon, v.weight, {r.x, r.y}, min(r.w, r.h), color(ctx, v.color, on_solid), ctx.scale)
+		text.draw_icon(list, ctx.text, v.icon, v.weight, {r.x, r.y}, min(r.w, r.h), fade(color(ctx, v.color, on_solid), a), ctx.scale)
 	}
 	return on_solid
+}
+
+@(private)
+fade :: proc(c: theme.Color, a: f32) -> theme.Color {
+	if a >= 1 {
+		return c
+	}
+	return {c.r, c.g, c.b, u8(f32(c.a) * a + 0.5)}
 }
 
 color :: proc(ctx: ^Context, token: Token, on_solid: bool) -> theme.Color {

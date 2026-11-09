@@ -95,12 +95,15 @@ run :: proc(app: ^App) {
 				app.mode = .Dark if platform.is_dark_theme() else .Light
 			}
 		case .Key_Down:
-			switch e.key {
+			if e.repeat || e.key != .Char {
+				break
+			}
+			switch e.char {
 			case '0':
 				app.scale = 0
 			case '1' ..= '4':
 				scales := SCALES
-				app.scale = scales[e.key - '1']
+				app.scale = scales[e.char - '1']
 			case 'd':
 				app.mode = .Light if app.mode == .Dark else .Dark
 				app.mode_forced = true

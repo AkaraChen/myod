@@ -7,13 +7,11 @@ import "../render"
 import "../text"
 import "../theme"
 
-@(private = "file")
 Fixture :: struct {
 	txt: text.Context,
 	ctx: Context,
 }
 
-@(private = "file")
 setup :: proc(t: ^testing.T) -> ^Fixture {
 	f := new(Fixture)
 	testing.expect(t, text.init(&f.txt), "DWG not found: run the tests from the repository root")
@@ -21,21 +19,18 @@ setup :: proc(t: ^testing.T) -> ^Fixture {
 	return f
 }
 
-@(private = "file")
 teardown :: proc(f: ^Fixture) {
 	destroy(&f.ctx)
 	text.destroy(&f.txt)
 	free(f)
 }
 
-@(private = "file")
 run_frame :: proc(f: ^Fixture, view: View_Proc, data: rawptr = nil, size := [2]f32{800, 600}) {
 	list := render.make_command_list()
 	frame(&f.ctx, view, data, size, 1, theme.make_theme(.Light), &list)
 	free_all(context.temp_allocator)
 }
 
-@(private = "file")
 fixed :: proc(w, h: f32) -> layout.Node {
 	return {size = {{w, .Px}, {h, .Px}}}
 }
