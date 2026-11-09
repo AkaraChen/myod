@@ -43,13 +43,18 @@ vendor:
     mkdir -p third_party/prebuilt/{{platform}}
     cp build/prebuilt-{{platform}}/* third_party/prebuilt/{{platform}}/
     chmod 644 third_party/prebuilt/{{platform}}/*
+    cd third_party && {{nix}} build .#fonts -o ../build/fonts
+    rm -rf third_party/fonts && mkdir -p third_party/fonts
+    cp build/fonts/* third_party/fonts/ && chmod 644 third_party/fonts/*
 
 # Check that the committed static libraries are byte-for-byte identical to the Nix build
 verify:
     cd third_party && {{nix}} build .#prebuilt -o ../build/prebuilt-{{platform}}
     diff -r build/prebuilt-{{platform}} third_party/prebuilt/{{platform}}
     cd third_party/prebuilt/{{platform}} && shasum -a 256 -c SHA256SUMS
-    @echo "third_party/prebuilt/{{platform}} is byte-for-byte identical to the Nix build"
+    cd third_party && {{nix}} build .#fonts -o ../build/fonts
+    diff -r build/fonts third_party/fonts
+    @echo "third_party/prebuilt/{{platform}} and third_party/fonts are byte-for-byte identical to the Nix build"
 
 # Force a rebuild to confirm the build itself is deterministic
 verify-rebuild:

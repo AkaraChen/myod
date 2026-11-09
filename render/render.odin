@@ -2,6 +2,7 @@
 // depends on the GPU (see ARCHITECTURE.md, "Module layout").
 package render
 
+import "../atlas"
 import "../theme"
 
 Color :: theme.Color
@@ -38,10 +39,27 @@ Cmd_Clip_Push :: struct {
 
 Cmd_Clip_Pop :: struct {}
 
+// One glyph or icon image, already rasterized into an atlas.
+Glyph_Quad :: struct {
+	atlas:  atlas.Kind,
+	texel:  [4]i32, // x, y, w, h in the atlas
+	offset: [2]i32, // top-left relative to the run origin, physical pixels
+}
+
+// A run of glyphs shaped and rasterized for one display scale. `origin` is the baseline start in
+// logical pixels; the backend snaps it to a physical pixel and adds each quad's integer offset, so
+// every glyph lands on whole pixels and samples its texels 1:1.
+Cmd_Glyph_Run :: struct {
+	origin: [2]f32,
+	color:  Color, // multiplies mask glyphs; only the alpha applies to color glyphs
+	quads:  []Glyph_Quad,
+}
+
 Draw_Command :: union {
 	Cmd_Rect,
 	Cmd_Clip_Push,
 	Cmd_Clip_Pop,
+	Cmd_Glyph_Run,
 }
 
 // The commands for one frame. Allocate it with context.temp_allocator; it lives for one frame.

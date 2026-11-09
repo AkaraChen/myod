@@ -109,28 +109,28 @@ Each milestone uses **a runnable demo** as its acceptance criterion, placed unde
 This is the hardest part. The earlier it starts, the better.
 
 - [ ] **Text backends** (per the table in ARCHITECTURE.md, “Technology choices”, following Ghostty):
-  - [ ] macOS: Odin bindings for CoreText, handling font discovery, rasterization, and shaping
+  - [x] macOS: CoreText (via Odin's `core:sys/darwin/CoreText`), handling font loading, shaping, rasterization and fallback (`text/backend_darwin.odin`). System font discovery by name is still to do
   - [ ] Linux: Fontconfig + FreeType + HarfBuzz
   - [ ] The three backends expose the same interface to the layer above: font lookup, shaping, rasterization, metrics
   - [ ] FreeType load flags: hinting + auto-hinter + light
 - [ ] **DWG**:
-  - [ ] The default font, in two weights, Regular and Bold; loaded on demand as resource files, not compiled into the program (about 8MB per weight)
+  - [x] The default font, in two weights, Regular and Bold; loaded at runtime from `third_party/fonts/` (or `$MYOD_FONT_DIR`), not compiled into the program (about 17MB per weight). Pinned in `sources.toml` and checked by `just verify`
   - License confirmed: it may be distributed with the library. Releases include the license file for each part (OFL 1.1 for the Latin part, the Alibaba license for Alibaba PuHuiTi 3.0 (阿里巴巴普惠体))
   - [ ] Fast measurement on the 2:1 grid: programming ligatures do not change character width, so width is computed directly as “half-width count × 0.5em + full-width count × 1em”, with no shaping
 - [ ] **Font features**: OpenType features (`calt`, `liga`, `ss01`–`ss20`, `cv01`…, `zero`, `frac`…) and variable font axes (`wght`, `wdth`…), all configurable in the theme's text roles
-- [ ] **Shaping cache**: cache shaping results by a hash of `(string, font, size, features, variation axes)`, evicted per frame. Immediate mode redeclares all text every frame; without a cache, Data Table cannot keep up
+- [x] **Shaping cache**: cache shaping results by `(string, face)`, evicting entries unused for 120 frames; features and variation axes join the key when they land. Immediate mode redeclares all text every frame; without a cache, Data Table cannot keep up
 - [ ] **Font fallback**: characters outside DWG (Chinese characters outside the Level 1 and Level 2 sets, emoji, other scripts) go through system fallback: CoreText's fallback list, Fontconfig. Fallback glyphs are vertically centered in the line box; line height uses the primary font's metrics
-- [ ] **Color glyphs**: Apple Color Emoji (sbix, handled directly by CoreText), Noto Color Emoji (CBDT bitmaps), drawn in color mode
+- [ ] **Color glyphs**: Apple Color Emoji (sbix, handled directly by CoreText) — done on macOS; Noto Color Emoji (CBDT bitmaps) with the FreeType backend. Drawn in color mode
 - [ ] **Sprite glyphs** (`sprite/`): box drawing (U+2500–257F), block elements (U+2580–259F), Braille patterns (U+2800–28FF), Powerline separators. Drawn directly with rectangles, with no gaps between adjacent cells. Spinner also uses this module
 - [ ] **Alpha blending for text**: native on macOS; on Linux, correct coverage with `linear-corrected`
 - [ ] Text styles: size, weight, color, letter spacing, uppercase transform (Latin letters only), underline
 - [ ] **Dynamic atlas** (`atlas/`):
-  - [ ] shelf / skyline packing algorithm
+  - [x] shelf packing (`atlas/`), with dirty-region uploads; single page for now
   - [ ] Cache key: `(source, id, size_px, subpixel_x)`; the source can be a glyph or an SVG; `subpixel_x` is always 0 for SVG
   - [ ] Grows by page; when full, evict the least recently used page as a whole; respect the GPU memory budget
   - [ ] `MYOD_DEBUG_ATLAS=1`: draw the atlas on screen
 - [ ] `MYOD_DEBUG_RENDER=1` debug overlay (moved from M1, now that text exists): draw calls, instances, atlas pages, frame time
-- [ ] Add `Cmd_Glyph_Run`; the backend draws glyph quads with the same instanced pipeline (sampling the atlas texture)
+- [x] Add `Cmd_Glyph_Run`; the backend draws glyph quads with the same instanced pipeline (sampling the atlas texture). Glyphs land on whole physical pixels with 4 horizontal subpixel bins
 - [ ] **SVG icons** (`svg/`, `icons/`):
   - [ ] Write Odin bindings for nanosvg (parsing + rasterization)
   - [ ] Replace `currentColor` with white before parsing, and draw the rasterized result in mask mode so it follows the text color
@@ -140,12 +140,13 @@ This is the hardest part. The earlier it starts, the better.
   - [ ] An icon can be an element in a text run, taking part in measurement and wrapping, vertically centered in the line box
   - [ ] `icons/` provides name constants for Phosphor icons and uses `#load` to embed only the SVGs actually used
   - [ ] Support six weights: thin, light, regular, bold, fill, duotone
-- [ ] Text measurement API: `measure(text, style) -> [2]f32`
+- [x] Text measurement API: `measure(text, style) -> [2]f32` (single line for now; wrapping comes with libunibreak)
 - [ ] Line breaking and grapheme clusters: integrate libunibreak (UAX #14, UAX #29)
 - [ ] Uppercase transform and letter spacing apply only to Latin letters, not to Chinese
 - [ ] Rasterize according to the DPI scale factor; after converting the font size to physical pixels, round to the nearest even number so the half-width advance is always an integer number of pixels; the smallest size, 12px, needs a dedicated check on 1x screens
 
 **Acceptance:**
+- [x] Step a (2026-11-09, macOS arm64): `examples/02_text` renders the DESIGN.md type scale in DWG with mixed Chinese and English, Cascadia ligatures, the 2:1 grid, fallback characters and color emoji; `--selftest` checks the 2:1 grid at every scale and size, fallback, and color emoji; visual check passed
 - `examples/02_text`: render a page of mixed Chinese and English content following the type scale in DESIGN.md; sharp at 1x, 2x, and 1.5x, aligned to the 2:1 grid, wrapping automatically with window width. The same page includes Cascadia programming ligatures, a variable font (any variable font, demonstrating continuous change on the `wght` axis), emoji, and Chinese characters outside the Level 1 and Level 2 sets (through fallback)
 - `examples/02_sprites`: patterns built from box drawing, block, Braille, and Powerline characters, with no gaps between adjacent cells at any scale
 - `examples/02_icons`: the same set of Phosphor icons laid out as a matrix of six weights × 12 / 16 / 20 / 24px, sharp on both 1x and 2x screens; the two duotone layers use different colors; a line mixing icons and text aligns correctly. In particular, confirm whether the default bold weight is sharp at 12px and 16px.

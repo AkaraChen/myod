@@ -25,6 +25,9 @@
           inherit system;
         };
 
+        # Fonts are platform-independent; they go into fonts/
+        fonts = pkgs.callPackage ./nix/fonts.nix { source = sources.dwg; };
+
         # Everything that goes into prebuilt/<platform>/
         prebuilt = pkgs.runCommand "myod-prebuilt-${platforms.${system}}" { } ''
           mkdir -p $out

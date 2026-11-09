@@ -6,11 +6,13 @@ import "core:math"
 import "core:time"
 
 import wgpu "../third_party/odin/wgpu"
+import "../atlas"
 import "../render"
 
-// Atlas size for M1. M2 replaces this with paged atlases.
+// Size of the renderer's own fallback atlases, used when no text context supplies atlases.
+// They only hold the white texel for solid rectangles.
 @(private)
-ATLAS_SIZE :: 256
+FALLBACK_ATLAS_SIZE :: 16
 
 @(private)
 RENDERER_WGSL :: `
@@ -105,20 +107,24 @@ Renderer :: struct {
 	uniforms:        wgpu.Buffer,
 	instance_buffer: wgpu.Buffer,
 	instance_cap:    int,
-	mask_atlas:      wgpu.Texture,
-	mask_view:       wgpu.TextureView,
-	color_atlas:     wgpu.Texture,
-	color_view:      wgpu.TextureView,
+	textures:        [atlas.Kind]Gpu_Atlas,
+	fallback:        [atlas.Kind]atlas.Atlas,
 	sampler:         wgpu.Sampler,
+	layout:          wgpu.BindGroupLayout,
 	bind_group:      wgpu.BindGroup,
 	instances:       [dynamic]Instance,
 	batches:         [dynamic]Batch,
 	stats:           Render_Stats,
 }
 
-// The texel holding the white pixel used for solid rectangles, as a UV at its center.
+// The GPU copy of one CPU atlas.
 @(private)
-WHITE_UV :: [2]f32{0.5 / ATLAS_SIZE, 0.5 / ATLAS_SIZE}
+Gpu_Atlas :: struct {
+	texture: wgpu.Texture,
+	view:    wgpu.TextureView,
+	size:    i32,
+	source:  ^atlas.Atlas,
+}
 
 renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: Renderer) {
 	r.format = format
@@ -169,9 +175,8 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 
 	r.uniforms = wgpu.DeviceCreateBuffer(gpu.device, &{label = "myod globals", usage = {.Uniform, .CopyDst}, size = 16})
 
-	// Two atlases, both with a white texel at (0, 0). M2 fills them with glyphs, icons and emoji.
-	r.mask_atlas, r.mask_view = create_atlas(gpu, "myod mask atlas", .R8Unorm, 1)
-	r.color_atlas, r.color_view = create_atlas(gpu, "myod color atlas", .RGBA8Unorm, 4)
+	atlas.init(&r.fallback[.Mask], .Mask, FALLBACK_ATLAS_SIZE)
+	atlas.init(&r.fallback[.Color], .Color, FALLBACK_ATLAS_SIZE)
 
 	r.sampler = wgpu.DeviceCreateSampler(
 		gpu.device,
@@ -187,56 +192,85 @@ renderer_init :: proc(gpu: Gpu, format: wgpu.TextureFormat, srgb: bool) -> (r: R
 		},
 	)
 
-	layout := wgpu.RenderPipelineGetBindGroupLayout(r.pipeline, 0)
-	defer wgpu.BindGroupLayoutRelease(layout)
-	entries := [?]wgpu.BindGroupEntry {
-		{binding = 0, buffer = r.uniforms, size = 16},
-		{binding = 1, textureView = r.mask_view},
-		{binding = 2, textureView = r.color_view},
-		{binding = 3, sampler = r.sampler},
-	}
-	r.bind_group = wgpu.DeviceCreateBindGroup(
-		gpu.device,
-		&{label = "myod renderer", layout = layout, entryCount = len(entries), entries = &entries[0]},
-	)
+	// Atlas textures and the bind group are created by the first renderer_draw: the renderer is
+	// returned by value, so it must not keep pointers into itself yet.
+	r.layout = wgpu.RenderPipelineGetBindGroupLayout(r.pipeline, 0)
 	return
 }
 
+// Makes the GPU atlases match the given CPU atlases (or the renderer's fallback atlases):
+// recreates a texture when its source or size changed, then uploads the dirty region.
 @(private)
-create_atlas :: proc(gpu: Gpu, label: string, format: wgpu.TextureFormat, bytes_per_texel: u32) -> (wgpu.Texture, wgpu.TextureView) {
-	texture := wgpu.DeviceCreateTexture(
-		gpu.device,
-		&{
-			label = label,
-			usage = {.TextureBinding, .CopyDst},
-			dimension = ._2D,
-			size = {ATLAS_SIZE, ATLAS_SIZE, 1},
-			format = format,
-			mipLevelCount = 1,
-			sampleCount = 1,
-		},
-	)
-	white := [4]u8{255, 255, 255, 255}
-	wgpu.QueueWriteTexture(
-		gpu.queue,
-		&{texture = texture, aspect = .All},
-		&white,
-		uint(bytes_per_texel),
-		&{bytesPerRow = bytes_per_texel, rowsPerImage = 1},
-		&{1, 1, 1},
-	)
-	return texture, wgpu.TextureCreateView(texture, nil)
+sync_atlases :: proc(gpu: Gpu, r: ^Renderer, atlases: ^[atlas.Kind]atlas.Atlas) {
+	rebind := r.bind_group == nil
+	for kind in atlas.Kind {
+		src := &atlases[kind] if atlases != nil else &r.fallback[kind]
+		t := &r.textures[kind]
+		if t.source != src || t.size != src.size {
+			if t.texture != nil {
+				wgpu.TextureViewRelease(t.view)
+				wgpu.TextureRelease(t.texture)
+			}
+			t.texture = wgpu.DeviceCreateTexture(
+				gpu.device,
+				&{
+					label = "myod mask atlas" if kind == .Mask else "myod color atlas",
+					usage = {.TextureBinding, .CopyDst},
+					dimension = ._2D,
+					size = {u32(src.size), u32(src.size), 1},
+					format = .R8Unorm if kind == .Mask else .RGBA8Unorm,
+					mipLevelCount = 1,
+					sampleCount = 1,
+				},
+			)
+			t.view = wgpu.TextureCreateView(t.texture, nil)
+			t.size = src.size
+			t.source = src
+			atlas.mark_all_dirty(src)
+			rebind = true
+		}
+		if d, ok := atlas.take_dirty(src); ok {
+			offset := int((d.y * src.size + d.x) * src.bpp)
+			wgpu.QueueWriteTexture(
+				gpu.queue,
+				&{texture = t.texture, origin = {u32(d.x), u32(d.y), 0}, aspect = .All},
+				&src.pixels[offset],
+				uint(len(src.pixels)) - uint(offset),
+				&{bytesPerRow = u32(src.size * src.bpp), rowsPerImage = u32(d.w - d.y)},
+				&{u32(d.z - d.x), u32(d.w - d.y), 1},
+			)
+		}
+	}
+	if rebind {
+		if r.bind_group != nil {
+			wgpu.BindGroupRelease(r.bind_group)
+		}
+		entries := [?]wgpu.BindGroupEntry {
+			{binding = 0, buffer = r.uniforms, size = 16},
+			{binding = 1, textureView = r.textures[.Mask].view},
+			{binding = 2, textureView = r.textures[.Color].view},
+			{binding = 3, sampler = r.sampler},
+		}
+		r.bind_group = wgpu.DeviceCreateBindGroup(
+			gpu.device,
+			&{label = "myod renderer", layout = r.layout, entryCount = len(entries), entries = &entries[0]},
+		)
+	}
 }
 
 renderer_destroy :: proc(r: ^Renderer) {
 	delete(r.instances)
 	delete(r.batches)
 	wgpu.BindGroupRelease(r.bind_group)
+	wgpu.BindGroupLayoutRelease(r.layout)
 	wgpu.SamplerRelease(r.sampler)
-	wgpu.TextureViewRelease(r.color_view)
-	wgpu.TextureRelease(r.color_atlas)
-	wgpu.TextureViewRelease(r.mask_view)
-	wgpu.TextureRelease(r.mask_atlas)
+	for &t in r.textures {
+		wgpu.TextureViewRelease(t.view)
+		wgpu.TextureRelease(t.texture)
+	}
+	for &a in r.fallback {
+		atlas.destroy(&a)
+	}
 	if r.instance_buffer != nil {
 		wgpu.BufferRelease(r.instance_buffer)
 	}
@@ -248,6 +282,8 @@ renderer_destroy :: proc(r: ^Renderer) {
 
 // Records a render pass into `target` that clears it to `clear` and draws `list`.
 // `size` is the target size in physical pixels; `scale` maps logical to physical pixels.
+// `atlases` are the CPU atlases glyph runs refer to (e.g. a text context's); nil uses the
+// renderer's fallback atlases, which only support solid rectangles.
 renderer_draw :: proc(
 	gpu: Gpu,
 	r: ^Renderer,
@@ -257,8 +293,10 @@ renderer_draw :: proc(
 	scale: f32,
 	list: render.Command_List,
 	clear: render.Color,
+	atlases: ^[atlas.Kind]atlas.Atlas = nil,
 ) {
 	start := time.tick_now()
+	sync_atlases(gpu, r, atlases)
 	build_instances(r, list, size, scale)
 
 	if len(r.instances) > r.instance_cap {
@@ -347,6 +385,11 @@ build_instances :: proc(r: ^Renderer, list: render.Command_List, size: [2]u32, s
 				continue // fully clipped
 			}
 			push_rect(r, c, scale)
+		case render.Cmd_Glyph_Run:
+			if clip.z <= clip.x || clip.w <= clip.y {
+				continue
+			}
+			push_glyph_run(r, c, scale)
 		}
 	}
 	r.batches[len(r.batches) - 1].count = u32(len(r.instances)) - r.batches[len(r.batches) - 1].first
@@ -417,14 +460,36 @@ push_quad :: proc(r: ^Renderer, x0, y0, x1, y1: f32, color: render.Color) {
 	if x1 <= x0 || y1 <= y0 {
 		return
 	}
+	white := 0.5 / f32(r.textures[.Mask].size) // center of the white texel at (0, 0)
 	append(&r.instances, Instance {
 		pos = {x0, y0},
 		size = {x1 - x0, y1 - y0},
-		uv0 = WHITE_UV,
-		uv1 = WHITE_UV,
+		uv0 = {white, white},
+		uv1 = {white, white},
 		color = encode(r^, color),
 		mode = .Mask,
 	})
+}
+
+// Glyph quads land on whole physical pixels and map 1:1 onto their atlas texels.
+@(private)
+push_glyph_run :: proc(r: ^Renderer, c: render.Cmd_Glyph_Run, scale: f32) {
+	ox := math.round(c.origin.x * scale)
+	oy := math.round(c.origin.y * scale)
+	color := encode(r^, c.color)
+	for q in c.quads {
+		inv := 1 / f32(r.textures[q.atlas].size)
+		x, y := f32(q.texel[0]), f32(q.texel[1])
+		w, h := f32(q.texel[2]), f32(q.texel[3])
+		append(&r.instances, Instance {
+			pos = {ox + f32(q.offset.x), oy + f32(q.offset.y)},
+			size = {w, h},
+			uv0 = {x * inv, y * inv},
+			uv1 = {(x + w) * inv, (y + h) * inv},
+			color = color,
+			mode = .Mask if q.atlas == .Mask else .Color,
+		})
+	}
 }
 
 // Encodes an sRGB color for the target format: sRGB formats need linear RGB values.

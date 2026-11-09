@@ -31,3 +31,11 @@ hash = "sha256-/EJ6yy1PETqcny5d2ZM2ZJ5VgVTDvqGaSSmIvqamcwM="
 [wgpu_native.artifacts.aarch64-linux]
 url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-aarch64-release.zip"
 hash = "sha256-thMN+CgDtkTeAYbEJIFaGobE+Y8xg63Q/L4aZX/8mBA="
+
+[dwg]
+version = "1.1.0"
+build = "upstream-release"
+url = "https://github.com/AkaraChen/font/releases/download/v1.1.0/AKRDWGSCNFM-1.1.0.zip"
+hash = "sha256-5v2DXps5s7oL8cJzjcl8+6SjgCz1b2xMaEQBQig2ihM="
+# Copied into third_party/fonts/. The UI uses Regular and Bold (DESIGN.md, "Typography").
+files = ["AKRDWGSCNFM-Regular.ttf", "AKRDWGSCNFM-Bold.ttf", "OFL-CascadiaCode.txt", "Alibaba-PuHuiTi.txt"]
