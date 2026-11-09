@@ -174,6 +174,12 @@ open_window :: proc(title: string, width, height: i32) -> (^Window, bool) {
 	return w, true
 }
 
+// The platform window object (an NSWindow* on macOS), for adapters that need it: accessibility.
+native_window :: proc(w: ^Window) -> rawptr {
+	props := sdl.GetWindowProperties(w.handle)
+	return sdl.GetPointerProperty(props, sdl.PROP_WINDOW_COCOA_WINDOW_POINTER, nil)
+}
+
 close_window :: proc(w: ^Window) {
 	sdl.RemoveEventWatch(event_watch, w)
 	sdl.DestroyWindow(w.handle)

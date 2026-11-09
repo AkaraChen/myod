@@ -3,7 +3,7 @@ name = "myod_ffi"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "myod's Rust dependencies behind a C ABI: Taffy layout (later also AccessKit)"
+description = "myod's Rust dependencies behind a C ABI: Taffy layout and AccessKit"
 license = "Zlib"
 
 [lib]
@@ -11,6 +11,10 @@ crate-type = ["staticlib"]
 
 [dependencies]
 taffy = { version = "=0.15.1", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accesskit = "=0.25.2"
+accesskit_macos = "=0.27.2"
 
 [profile.release]
 panic = "abort"

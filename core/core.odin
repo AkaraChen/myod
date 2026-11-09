@@ -184,6 +184,9 @@ Context :: struct {
 	a11y:       [dynamic]A11y_Node, // the semantic tree of the last pass
 	a11y_prev:  [dynamic]A11y_Node, // for MYOD_A11Y_LOG
 	a11y_log:   bool,
+	ax:         rawptr, // the platform accessibility adapter (a11y_macos.odin)
+	// An accessibility action changed an interaction result outside the platform event stream.
+	frame_requested: bool,
 	size:        [2]f32, // the window's logical size this frame
 	frame_start: time.Tick,
 	pass_start:  time.Tick,

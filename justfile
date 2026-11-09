@@ -77,6 +77,19 @@ vendor:
     rm -rf third_party/phosphor && cp -r build/phosphor third_party/phosphor && chmod -R u+w third_party/phosphor
     python3 -I third_party/scripts/gen_phosphor.py third_party/phosphor icons/phosphor/phosphor.odin
 
+# Dump a running app's accessibility tree, e.g. `just a11y-dump` or `just a11y-dump 03_feed`
+# (the terminal running it needs Accessibility permission in System Settings → Privacy & Security)
+a11y-dump app="counter":
+    mkdir -p build
+    odin build tools/a11y {{odin_flags}} -out:build/a11y
+    pid="$(pgrep -x {{app}} | head -1 || true)"; test -n "$pid" || { echo "no running process named {{app}}"; exit 1; }; ./build/a11y dump "$pid"
+
+# Press a widget by its accessibility name, e.g. `just a11y-press 加一` (default app: counter)
+a11y-press name app="counter":
+    mkdir -p build
+    odin build tools/a11y {{odin_flags}} -out:build/a11y
+    pid="$(pgrep -x {{app}} | head -1 || true)"; test -n "$pid" || { echo "no running process named {{app}}"; exit 1; }; ./build/a11y press "{{name}}" "$pid"
+
 # Check that the committed static libraries are byte-for-byte identical to the Nix build
 verify:
     cd third_party && {{nix}} build .#prebuilt -o ../build/prebuilt-{{platform}}

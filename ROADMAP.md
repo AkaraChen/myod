@@ -202,35 +202,35 @@ Layout needs something to lay out, so this milestone also builds the declaration
 
 ### M4: Core — the first clickable button
 
-- [ ] Input state: mouse position and buttons, wheel, keyboard, modifiers, unified into one snapshot per frame
-- [ ] hot / active state (hover / pressed)
-- [ ] **Input phase**: before `view`, hit-test against the layout currently on screen, dispatch events, update presentation state, and record interaction results by ID; widgets only read the results in `view`
-- [ ] **On-demand ghost rendering**: when the layout disagrees with what `view` read, discard this pass's messages and rerun, at most 3 passes; interaction results are consumed only once
-- [ ] **Event-driven frame loop**:
-  - [ ] Block and wait when there are no events (`SDL_WaitEvent`)
-  - [ ] Compare against the previous frame's command list (hash); if nothing changed, do not submit to the GPU
-  - [ ] Only events, messages, due timers, and `request_redraw` trigger a new frame; the wait timeout is the earliest of these
-- [ ] **Store** (implemented per ARCHITECTURE.md, “API design”):
-  - [ ] `ui.Store(State, Msg)`, `store_init` / `store_destroy`, `Dispatch(Msg)`, `dispatch`
-  - [ ] `next_frame` processes messages and runs effects in order; when messages remain unprocessed, rerun immediately without submitting intermediate frames
-  - [ ] Message arena: freed as a whole after each round of message processing
-- [ ] **Tasks and effects**:
-  - [ ] `start_task` / `cancel_task` / `emit` / `cancelled`; tasks run on threads managed by the library
-  - [ ] A task's `emit` and return value enter the store through a thread-safe queue and wake the UI thread (`SDL_PushEvent`)
-  - [ ] `store_destroy` first cancels and joins all tasks, then calls `destroy`
-  - [ ] The `focus` effect and the widget `key`
-  - [ ] Each task automatically records its start time and the time of its most recent `emit`, for the pending state component
-  - [ ] `after` timers: the earliest of all pending timers becomes the timeout for `SDL_WaitEventTimeout`
-- [ ] **API skeleton**:
-  - [ ] A `Response` struct returned uniformly by all widgets; widgets with a value return the new value as the second return value
-  - [ ] Current window stack: thread-local, modifiable only by `next_frame` and `window_scope`
-  - [ ] Debug assertions: calls from other threads, calls outside a frame, window already closed
-- [ ] **Low-level primitives**: `ui.Inbox($T)` and `ui.wake`; Store and Task are built on them too
-- [ ] First widget: the outline button; the idle, hover, and pressed states change color only
-- [ ] **Semantic tree**: built each frame after view and layout; node IDs are widget IDs; contains role, name, value, state, position, actions
-- [ ] **Integrate AccessKit** (per ARCHITECTURE.md, “API design → 17”): macOS and Linux adapters; incremental updates; screen reader actions enter the input phase as synthetic events
-- [ ] **Debug tools**: `just a11y-dump`, `just a11y-press`, `MYOD_A11Y_LOG=1`
-- [ ] **Test tools** (`testing/`): `test_harness`, lookup by role and name, simulated clicks and input that go through the real input phase; all tests use the FreeType + HarfBuzz backend
+- [x] Input state: mouse position and buttons, wheel, keyboard, modifiers, unified into one snapshot per frame
+- [x] hot / active state (hover / pressed)
+- [x] **Input phase**: before `view`, hit-test against the layout currently on screen, dispatch events, update presentation state, and record interaction results by ID; widgets only read the results in `view`
+- [x] **On-demand ghost rendering**: when the layout disagrees with what `view` read, discard this pass's messages and rerun, at most 3 passes; interaction results are consumed only once
+- [x] **Event-driven frame loop**:
+  - [x] Block and wait when there are no events (`SDL_WaitEvent`)
+  - [x] Compare against the previous frame's command list (hash); if nothing changed, do not submit to the GPU
+  - [x] Only events, messages, due timers, and `request_redraw` trigger a new frame; the wait timeout is the earliest of these
+- [x] **Store** (implemented per ARCHITECTURE.md, “API design”):
+  - [x] `ui.Store(State, Msg)`, `store_init` / `store_destroy`, `Dispatch(Msg)`, `dispatch`
+  - [x] `next_frame` processes messages and runs effects in order; when messages remain unprocessed, rerun immediately without submitting intermediate frames
+  - [x] Message arena: freed as a whole after each round of message processing
+- [x] **Tasks and effects**:
+  - [x] `start_task` / `cancel_task` / `emit` / `cancelled`; tasks run on threads managed by the library
+  - [x] A task's `emit` and return value enter the store through a thread-safe queue and wake the UI thread (`SDL_PushEvent`)
+  - [x] `store_destroy` first cancels and joins all tasks, then calls `destroy`
+  - [x] The `focus` effect and the widget `key`
+  - [x] Each task automatically records its start time and the time of its most recent `emit`, for the pending state component
+  - [x] `after` timers: the earliest of all pending timers becomes the timeout for `SDL_WaitEventTimeout`
+- [x] **API skeleton**:
+  - [x] A `Response` struct returned uniformly by all widgets; widgets with a value return the new value as the second return value
+  - [x] Current window stack: thread-local, modifiable only by `next_frame` and `window_scope`
+  - [x] Debug assertions: calls from other threads, calls outside a frame, window already closed
+- [x] **Low-level primitives**: `ui.Inbox($T)` and `ui.wake`; Store and Task are built on them too
+- [x] First widget: the outline button; the idle, hover, and pressed states change color only
+- [x] **Semantic tree**: built each frame after view and layout; node IDs are widget IDs; contains role, name, value, state, position, actions
+- [x] **Integrate AccessKit** (per ARCHITECTURE.md, “API design → 17”): macOS adapter (the Linux one joins with the Linux port); incremental updates; screen reader actions enter the input phase as synthetic events
+- [x] **Debug tools**: `just a11y-dump`, `just a11y-press`, `MYOD_A11Y_LOG=1`
+- [x] **Test tools** (`testing/`): `test_harness`, lookup by role and name, simulated clicks and input that go through the real input phase; all tests use the FreeType + HarfBuzz backend
 
 **Acceptance:**
 - `examples/counter` actually runs: clicking + / − changes the number; CPU usage is near 0% when idle

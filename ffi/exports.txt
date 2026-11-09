@@ -5,3 +5,7 @@ myod_layout_clear
 myod_layout_results
 myod_layout_compute
 myod_layout_abi
+myod_a11y_init
+myod_a11y_update
+myod_a11y_set_focus
+myod_a11y_destroy

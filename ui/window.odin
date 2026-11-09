@@ -120,6 +120,10 @@ close_window :: proc(w: ^Window) {
 		w.ops.join(w.store)
 	}
 	delete(w.events)
+	if w.p != nil {
+		// Before the NSWindow goes away: the adapter unsubclasses its view.
+		core.a11y_detach(&w.ctx)
+	}
 	core.destroy(&w.ctx)
 	text.destroy(&w.text)
 	if w.p != nil {
@@ -182,7 +186,12 @@ next_frame :: proc(w: ^Window) -> bool {
 		// `w` has its final address now (open_window returns by value): point the context at this
 		// window's text, and let the live-resize callback keep the window pointer.
 		w.ctx.text = &w.text
-		platform.set_redraw(w.p, on_live_resize, w)
+		if w.p != nil {
+			platform.set_redraw(w.p, on_live_resize, w)
+			// The accessibility adapter subclasses the window's view, so it must be created once the
+			// view exists and while the window is at its final address.
+			core.a11y_attach(&w.ctx, w.p)
+		}
 		w.bound = true
 	}
 	if w.declared {
@@ -204,7 +213,7 @@ next_frame :: proc(w: ^Window) -> bool {
 		if w.closed {
 			return false
 		}
-		if processed || changed || w.first || redraw_due(w) || messages_pending(w) {
+		if processed || changed || w.ctx.frame_requested || w.first || redraw_due(w) || messages_pending(w) {
 			start_frame(w)
 			return begin_pass(w)
 		}
@@ -273,6 +282,7 @@ start_frame :: proc(w: ^Window) {
 	w.size = size
 	w.scale = scale
 	w.pass = 0
+	w.ctx.frame_requested = false
 	text.begin_frame(&w.text)
 	w.outer = core.frame_begin(&w.ctx, size, scale, theme.make_theme(w.mode))
 	append(&window_stack, w)
@@ -366,6 +376,9 @@ handle_events :: proc(w: ^Window) -> (changed: bool) {
 				changed = true
 			}
 		case .Mouse_Move, .Mouse_Down, .Mouse_Up, .Mouse_Leave, .Key_Down, .Key_Up, .Text_Input, .Text_Editing, .Focus_Gained, .Focus_Lost:
+			if e.kind == .Focus_Gained || e.kind == .Focus_Lost {
+				core.a11y_window_focus(&w.ctx, e.kind == .Focus_Gained)
+			}
 			if core.handle_event(&w.ctx, e) {
 				changed = true
 			}
@@ -437,6 +450,8 @@ present :: proc(w: ^Window) {
 	core.frame_end(&w.ctx, &list, w.outer)
 	w.started = false
 	if w.p != nil {
+		// After frame_end, which built the pass's semantic tree. AccessKit wants physical pixels.
+		core.a11y_publish(&w.ctx, scale, size)
 		add_overlays(w, &list)
 		submit(w, &list, size, scale, t)
 	}
@@ -483,17 +498,6 @@ submit :: proc(w: ^Window, list: ^render.Command_List, size: [2]u32, scale: f32,
 		w.last_hash = h
 		w.last_size = size
 	}
-	platform.set_title(
-		w.p,
-		fmt.tprintf(
-			"myod · %v · scale %.2f · %d instances · %d draw calls · %.3f ms",
-			w.mode,
-			scale,
-			w.renderer.stats.instances,
-			w.renderer.stats.draw_calls,
-			time.duration_milliseconds(w.renderer.stats.cpu_time),
-		),
-	)
 }
 
 // A content hash of the command list: equal lists present identically, so the GPU can be skipped.
