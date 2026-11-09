@@ -39,3 +39,15 @@ url = "https://github.com/AkaraChen/font/releases/download/v1.1.0/AKRDWGSCNFM-1.
 hash = "sha256-5v2DXps5s7oL8cJzjcl8+6SjgCz1b2xMaEQBQig2ihM="
 # Copied into third_party/fonts/. The UI uses Regular and Bold (DESIGN.md, "Typography").
 files = ["AKRDWGSCNFM-Regular.ttf", "AKRDWGSCNFM-Bold.ttf", "OFL-CascadiaCode.txt", "Alibaba-PuHuiTi.txt"]
+
+[freetype]
+version = "2.14.3"
+build = "source"
+url = "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz"
+hash = "sha256-NrxPHMQTM1No7mVsQq/KZcWjmH6HaMwozxG6d154Wl8="
+
+[harfbuzz]
+version = "14.5.1"
+build = "source"
+url = "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.1/harfbuzz-14.5.1.tar.xz"
+hash = "sha256-fi+k6MfJjo2BQGcfV3JUKvqqaszPvXRlBohrbYX3+NY="

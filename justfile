@@ -31,6 +31,10 @@ test:
     mkdir -p build
     odin build examples/01_rects {{odin_flags}} -out:build/01_rects
     ./build/01_rects --selftest
+    odin build examples/02_text {{odin_flags}} -out:build/02_text
+    ./build/02_text --selftest
+    odin build examples/02_text {{odin_flags}} -define:MYOD_TEXT_BACKEND=freetype -out:build/02_text_freetype
+    ./build/02_text_freetype --selftest
 
 # Type-check every example
 check:
@@ -58,7 +62,7 @@ verify:
 
 # Force a rebuild to confirm the build itself is deterministic
 verify-rebuild:
-    cd third_party && {{nix}} build .#sdl3 --rebuild
+    cd third_party && {{nix}} build .#sdl3 .#freetype .#harfbuzz .#text-shim --rebuild
 
 # Re-sync the SDL3 and wgpu bindings from Odin's vendor directory
 bindings:

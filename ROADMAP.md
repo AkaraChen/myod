@@ -110,9 +110,9 @@ This is the hardest part. The earlier it starts, the better.
 
 - [ ] **Text backends** (per the table in ARCHITECTURE.md, “Technology choices”, following Ghostty):
   - [x] macOS: CoreText (via Odin's `core:sys/darwin/CoreText`), handling font loading, shaping, rasterization and fallback (`text/backend_darwin.odin`). System font discovery by name is still to do
-  - [ ] Linux: Fontconfig + FreeType + HarfBuzz
-  - [ ] The three backends expose the same interface to the layer above: font lookup, shaping, rasterization, metrics
-  - [ ] FreeType load flags: hinting + auto-hinter + light
+  - [ ] Linux: Fontconfig + FreeType + HarfBuzz. FreeType + HarfBuzz done (`text/backend_freetype.odin`, also selectable on macOS with `-define:MYOD_TEXT_BACKEND=freetype`); FreeType goes through a small C shim (`third_party/shim/myod_ft.c`) so Odin never mirrors FreeType's structs. Fontconfig discovery and fallback still to do
+  - [x] The backends expose the same interface to the layer above (`text/backend.odin` picks one at compile time): font loading, faces, shaping, rasterization, metrics
+  - [x] FreeType load flags: hinting + auto-hinter + light
 - [ ] **DWG**:
   - [x] The default font, in two weights, Regular and Bold; loaded at runtime from `third_party/fonts/` (or `$MYOD_FONT_DIR`), not compiled into the program (about 17MB per weight). Pinned in `sources.toml` and checked by `just verify`
   - License confirmed: it may be distributed with the library. Releases include the license file for each part (OFL 1.1 for the Latin part, the Alibaba license for Alibaba PuHuiTi 3.0 (阿里巴巴普惠体))
@@ -146,6 +146,7 @@ This is the hardest part. The earlier it starts, the better.
 - [ ] Rasterize according to the DPI scale factor; after converting the font size to physical pixels, round to the nearest even number so the half-width advance is always an integer number of pixels; the smallest size, 12px, needs a dedicated check on 1x screens
 
 **Acceptance:**
+- [x] Step b (2026-11-09, macOS arm64): FreeType 2.14.3 + HarfBuzz 14.5.1 built from source with Nix (deterministic); `02_text --selftest` passes on both backends with identical 2:1 grid measurements; `just test` runs both
 - [x] Step a (2026-11-09, macOS arm64): `examples/02_text` renders the DESIGN.md type scale in DWG with mixed Chinese and English, Cascadia ligatures, the 2:1 grid, fallback characters and color emoji; `--selftest` checks the 2:1 grid at every scale and size, fallback, and color emoji; visual check passed
 - `examples/02_text`: render a page of mixed Chinese and English content following the type scale in DESIGN.md; sharp at 1x, 2x, and 1.5x, aligned to the 2:1 grid, wrapping automatically with window width. The same page includes Cascadia programming ligatures, a variable font (any variable font, demonstrating continuous change on the `wght` axis), emoji, and Chinese characters outside the Level 1 and Level 2 sets (through fallback)
 - `examples/02_sprites`: patterns built from box drawing, block, Braille, and Powerline characters, with no gaps between adjacent cells at any scale

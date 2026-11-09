@@ -206,6 +206,7 @@ draw_page :: proc(l: ^render.Command_List, ctx: ^text.Context, t: theme.Theme, s
 // ---- Self-test ----
 
 run_selftest :: proc(app: ^App) -> bool {
+	fmt.println("text backend:", text.BACKEND_NAME)
 	ok := true
 	for scale in SCALES {
 		for size in ([?]f32{12, 14, 16, 18, 20, 24, 32, 40, 48}) {
@@ -221,6 +222,13 @@ run_selftest :: proc(app: ^App) -> bool {
 	}
 	if ok {
 		fmt.println("ok   2:1 grid: half-width and full-width text measure to whole, matching pixels at every scale and size")
+	}
+
+	if text.BACKEND_NAME != "CoreText" {
+		// Fallback (Fontconfig) and color glyphs (FreeType + PNG) land in M2c for this backend.
+		fmt.println("SKIP fallback and color emoji: not implemented in this backend yet")
+		fmt.println("selftest:", "PASS" if ok else "FAIL")
+		return ok
 	}
 
 	style := text.Style{size = 16, line_height = 24, weight = .Regular}

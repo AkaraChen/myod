@@ -1,3 +1,4 @@
+#+build darwin
 // macOS text backend: CoreText for font loading, shaping and rasterization, as Ghostty's default
 // macOS backend does. CoreText's line layout also performs font fallback: each glyph run carries
 // the font that actually supplied its glyphs.
@@ -9,7 +10,7 @@ import CF "core:sys/darwin/CoreFoundation"
 import CG "core:sys/darwin/CoreGraphics"
 import CT "core:sys/darwin/CoreText"
 
-Backend :: struct {
+CoreText_Backend :: struct {
 	fonts: [dynamic]CT.FontDescriptorRef,
 	faces: [dynamic]Darwin_Face,
 }
@@ -21,11 +22,11 @@ Darwin_Face :: struct {
 	base: Font_Id, // NO_FONT for fallback faces chosen by CoreText
 }
 
-backend_init :: proc(b: ^Backend) -> bool {
+coretext_init :: proc(b: ^CoreText_Backend) -> bool {
 	return true
 }
 
-backend_destroy :: proc(b: ^Backend) {
+coretext_destroy :: proc(b: ^CoreText_Backend) {
 	for f in b.faces {
 		CF.Release(CF.TypeRef(f.font))
 	}
@@ -36,7 +37,7 @@ backend_destroy :: proc(b: ^Backend) {
 	delete(b.fonts)
 }
 
-backend_load_font :: proc(b: ^Backend, data: []u8) -> (Font_Id, bool) {
+coretext_load_font :: proc(b: ^CoreText_Backend, data: []u8) -> (Font_Id, bool) {
 	cf_data := CF.DataCreate(nil, raw_data(data), CF.Index(len(data)))
 	if cf_data == nil {
 		return NO_FONT, false
@@ -50,7 +51,7 @@ backend_load_font :: proc(b: ^Backend, data: []u8) -> (Font_Id, bool) {
 	return Font_Id(len(b.fonts) - 1), true
 }
 
-backend_face :: proc(b: ^Backend, font: Font_Id, size: f32) -> Face_Id {
+coretext_face :: proc(b: ^CoreText_Backend, font: Font_Id, size: f32) -> Face_Id {
 	for f, i in b.faces {
 		if f.base == font && f.size == size {
 			return Face_Id(i)
@@ -63,7 +64,7 @@ backend_face :: proc(b: ^Backend, font: Font_Id, size: f32) -> Face_Id {
 
 // Finds or registers the face for a CTFont that CoreText picked for a run.
 @(private)
-face_for_ct_font :: proc(b: ^Backend, font: CT.FontRef, size: f32) -> Face_Id {
+face_for_ct_font :: proc(b: ^CoreText_Backend, font: CT.FontRef, size: f32) -> Face_Id {
 	for f, i in b.faces {
 		if f.font == font || CF.Equal(CF.TypeRef(f.font), CF.TypeRef(font)) {
 			return Face_Id(i)
@@ -74,7 +75,7 @@ face_for_ct_font :: proc(b: ^Backend, font: CT.FontRef, size: f32) -> Face_Id {
 	return Face_Id(len(b.faces) - 1)
 }
 
-backend_shape :: proc(b: ^Backend, face: Face_Id, s: string, allocator := context.allocator) -> Shaped {
+coretext_shape :: proc(b: ^CoreText_Backend, face: Face_Id, s: string, allocator := context.allocator) -> Shaped {
 	f := b.faces[face]
 	out := Shaped {
 		ascent  = f32(CT.FontGetAscent(f.font)),
@@ -133,7 +134,7 @@ backend_shape :: proc(b: ^Backend, face: Face_Id, s: string, allocator := contex
 	return out
 }
 
-backend_rasterize :: proc(b: ^Backend, face: Face_Id, glyph: u32, subpixel: f32, allocator := context.allocator) -> (bm: Bitmap) {
+coretext_rasterize :: proc(b: ^CoreText_Backend, face: Face_Id, glyph: u32, subpixel: f32, allocator := context.allocator) -> (bm: Bitmap) {
 	font := b.faces[face].font
 	g := CG.Glyph(glyph)
 	bounds: CG.Rect
@@ -176,22 +177,8 @@ backend_rasterize :: proc(b: ^Backend, face: Face_Id, glyph: u32, subpixel: f32,
 	CT.FontDrawGlyphs(font, &g, &pos, 1, ctx)
 
 	if bm.color {
-		unpremultiply(pixels)
+		unpremultiply_rgba(pixels) // CoreGraphics renders premultiplied alpha
 	}
 	bm.pixels = pixels
 	return
-}
-
-// CoreGraphics renders premultiplied alpha; the color atlas stores straight alpha.
-@(private)
-unpremultiply :: proc(pixels: []u8) {
-	for i := 0; i < len(pixels); i += 4 {
-		a := u32(pixels[i + 3])
-		if a == 0 || a == 255 {
-			continue
-		}
-		for c in 0 ..< 3 {
-			pixels[i + c] = u8(min(255, (u32(pixels[i + c]) * 255 + a / 2) / a))
-		}
-	}
 }

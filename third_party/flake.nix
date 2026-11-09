@@ -20,6 +20,9 @@
     {
       packages = forAll (system: pkgs: rec {
         sdl3 = pkgs.callPackage ./nix/sdl3.nix { source = sources.sdl3; };
+        freetype = pkgs.callPackage ./nix/freetype.nix { source = sources.freetype; };
+        harfbuzz = pkgs.callPackage ./nix/harfbuzz.nix { source = sources.harfbuzz; inherit freetype; };
+        text-shim = pkgs.callPackage ./nix/text-shim.nix { inherit freetype; };
         wgpu-native = pkgs.callPackage ./nix/wgpu-native.nix {
           source = sources.wgpu_native;
           inherit system;
@@ -33,6 +36,9 @@
           mkdir -p $out
           cp ${sdl3}/lib/libSDL3.a $out/
           cp ${wgpu-native}/lib/libwgpu_native.a $out/
+          cp ${freetype}/lib/libfreetype.a $out/
+          cp ${harfbuzz}/lib/libharfbuzz.a $out/
+          cp ${text-shim}/lib/libmyod_text_shim.a $out/
           chmod 644 $out/*.a
           cd $out && sha256sum *.a > SHA256SUMS
         '';
