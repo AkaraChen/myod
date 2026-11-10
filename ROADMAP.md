@@ -328,21 +328,21 @@ Match the general-purpose components of [shadcn/ui](https://ui.shadcn.com/docs/c
 
 **To be built**:
 
-- [ ] Popup and overlay: Popover, Hover Card, Context Menu, Menubar, Navigation Menu, Select, Combobox, Dialog, Alert Dialog, Sheet, Drawer (appears instantly, no slide-in)
-  - [ ] Focus trap, close on Esc, close on click outside
-- [ ] Structure: Accordion, Collapsible (expands instantly), Breadcrumb, Pagination, Sidebar, Carousel (switches instantly)
-- [ ] Forms: Field, Input OTP, Calendar, Date Picker
-- [ ] Data: Table, **Data Table** (built on M5's horizontal and vertical virtualization: sorting, filtering, column resizing, fixed header; cell and row selection, copied as TSV; table accessibility semantics), **Command** (fuzzy search + virtual list)
-- [ ] Feedback:
-  - [ ] **Toast**: the toast list is application state; auto-dismiss uses a `ui.after` timer with generation token filtering; announced to screen readers as a live region
+- [x] Popup and overlay: Popover, Hover Card, Context Menu, Menubar, Navigation Menu, Select, Combobox, Dialog, Alert Dialog, Sheet, Drawer (appears instantly, no slide-in)
+  - [x] Focus trap, close on Esc, close on click outside
+- [x] Structure: Accordion, Collapsible (expands instantly), Breadcrumb, Pagination, Sidebar, Carousel (switches instantly)
+- [x] Forms: Field, Input OTP, Calendar, Date Picker
+- [x] Data: Table, **Data Table** (built on M5's horizontal and vertical virtualization: sorting, filtering, column resizing, fixed header; cell and row selection, copied as TSV; table accessibility semantics), **Command** (fuzzy search + virtual list)
+- [x] Feedback:
+  - [x] **Toast**: the toast list is application state; auto-dismiss uses a `ui.after` timer with generation token filtering; announced to screen readers as a live region
   - Spinner: done in M6
-- [ ] Identity: Avatar (square)
-- [ ] **Chart** (`chart/`):
-  - [ ] Bar, line, area, pie, and radar charts
-  - [ ] Build nanosvg shape structures in code (no SVG string concatenation), rasterize into a separate texture, drawn via `Cmd_Image`
-  - [ ] Cache key: `(data version, physical pixel size)`; while the window is being resized, stretch the old texture first, and re-rasterize once resizing stops
-  - [ ] Axis labels, values, and legends are drawn by the text system; grid lines use rectangles
-  - [ ] The hover crosshair and value tooltip are drawn as an overlay, without re-rasterizing
+- [x] Identity: Avatar (square)
+- [x] **Chart** (`chart/`):
+  - [x] Bar, line, area, pie, and radar charts
+  - [x] Build nanosvg shape structures in code (no SVG string concatenation), rasterize into a separate texture, drawn via `Cmd_Image`
+  - [x] Cache key: `(data version, physical pixel size)`; while the window is being resized, stretch the old texture first, and re-rasterize once resizing stops
+  - [x] Axis labels, values, and legends are drawn by the text system; grid lines use rectangles
+  - [x] The hover crosshair and value tooltip are drawn as an overlay, without re-rasterizing
 
 **Not provided**:
 - Purely business-specific components: Message, Message Scroller, Bubble, Attachment, Code Block, Marker, Questionnaire, Trace (shadcn's newly added chat-oriented components)
