@@ -192,6 +192,7 @@ Components share a height of **28px** (24px for small), so buttons and inputs al
 **Text selection**: inverted (fg background, bg-solid text)
 
 **Focus ring**: 2px solid fg, offset 1px outward (2px for sliders). Monochrome, never blue
+- Only for keyboard focus, and only while the system asks for visible focus indicators: macOS's full keyboard access (System Settings → Accessibility → Keyboard). With it off, the pointer is the primary input and nothing is outlined
 
 **Spinner**: square braille dot matrix
 - A 2 × 4 matrix of square dots, lit frame by frame following the braille spinner sequence `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`. Discrete frames, about 10 per second, no smooth interpolation

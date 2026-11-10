@@ -59,6 +59,10 @@ option_row :: proc(
 	ln := layout.Node {
 		flex_direction = .Row,
 		align_items    = .Center,
+		// The row fills the popup's width, so the hover/highlight fill and the hit box cover the
+		// whole row. With an auto width the label's zero basis collapses and only the check column
+		// would take clicks (the same bug sidebar items had).
+		align_self     = .Stretch,
 		gap            = {8, 8},
 		size           = {{0, .Auto}, {28, .Px}},
 		padding        = {8, 8, 0, 0},

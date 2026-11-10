@@ -1,6 +1,8 @@
 // Display widgets: text and icons. Interactive widgets arrive with M4 (see draft.odin).
 package ui
 
+import "core:math"
+
 import "../core"
 import "../icons"
 import "../layout"
@@ -47,6 +49,10 @@ Color :: enum {
 // Text in one of the type roles. It wraps to the width it gets unless `wrap` is false. Body text is
 // selectable by default (ARCHITECTURE.md, "API design → 16"); `interactive` text takes clicks
 // instead and is not selectable (a todo title that enters edit mode on a double click).
+//
+// `size` overrides the role's size in logical pixels, for places where the fixed scale does not fit
+// (a dense story list, an app header). The line height keeps the role's ratio, rounded to an even
+// number so the two-pixel grid still holds.
 text :: proc(
 	s: string,
 	style: Text_Style = .Body,
@@ -54,20 +60,32 @@ text :: proc(
 	width: Size = {},
 	wrap := true,
 	interactive := false,
+	size: f32 = 0,
 ) -> Response {
 	ctx := core.current()
 	id := core.auto_id(ctx)
 	ln: layout.Node
 	item(ctx, &ln, width, {})
+	st := text_style(style)
+	if size > 0 {
+		st.line_height = even_round(size * st.line_height / st.size)
+		st.size = size
+	}
 	flags := core.Node_Flags{}
 	if interactive {
 		flags += {.Hit}
 	}
-	core.leaf(ctx, id, ln, core.Paint_Text{s = s, style = text_style(style), color = token(color), wrap = wrap}, measured = true, flags = flags)
+	core.leaf(ctx, id, ln, core.Paint_Text{s = s, style = st, color = token(color), wrap = wrap}, measured = true, flags = flags)
 	if interactive {
 		return response_interactive(ctx, id, false)
 	}
 	return response(ctx, id)
+}
+
+@(private)
+even_round :: proc(v: f32) -> f32 {
+	n := int(math.round(v))
+	return f32(n + n % 2)
 }
 
 // A Phosphor icon, `size` logical pixels square. Bold by default (DESIGN.md, "Icons").
@@ -107,20 +125,25 @@ image :: proc(img: Image, width: Size = {}, height: Size = {}, fit: Image_Fit = 
 }
 
 // A tag: label type in the signal color, with a 1px border in the same color (DESIGN.md, "Tag").
-tag :: proc(s: string, color: Color = .Muted) -> Response {
+// `size` is the box's height in pixels; the label scales with it (20 by default, a 12px label).
+tag :: proc(s: string, color: Color = .Muted, size: f32 = 20) -> Response {
 	ctx := core.current()
 	id := core.auto_id(ctx)
+	pad := even_round(size * 0.3)
 	ln := layout.Node {
 		flex_direction  = .Row,
 		align_items     = .Center,
 		justify_content = .Center,
-		size            = {{0, .Auto}, {20, .Px}},
-		padding         = {6, 6, 0, 0},
+		size            = {{0, .Auto}, {size, .Px}},
+		padding         = {pad, pad, 0, 0},
 	}
 	opened := core.open(ctx, id, ln, core.Paint_Box{border = token(color), border_width = 1})
 	if opened {
 		leaf := layout.Node{}
-		core.leaf(ctx, core.auto_id(ctx), leaf, core.Paint_Text {s = s, style = text_style(.Label), color = token(color)}, measured = true)
+		st := text_style(.Label)
+		st.size = even_round(size * 0.6)
+		st.line_height = size
+		core.leaf(ctx, core.auto_id(ctx), leaf, core.Paint_Text {s = s, style = st, color = token(color)}, measured = true)
 	}
 	core.close(ctx)
 	return response(ctx, id)

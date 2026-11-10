@@ -300,7 +300,11 @@ open_box :: proc(o: Container_Options, dir: layout.Direction, flags: core.Node_F
 	item(ctx, &ln, o.width, o.height, o.column_span, o.row_span)
 	if .Scroll in f {
 		// A scroll container does not take its content's size as its automatic minimum, as on the
-		// web: without this it could not shrink below its content and would never scroll.
+		// web: without this it could not shrink below its content and would never scroll. Taffy
+		// needs to see the overflow itself, not just the flag: it is what reports the scrollable
+		// extent and what keeps the container's content out of its parent's intrinsic size.
+		ln.overflow_x = .Scroll
+		ln.overflow_y = .Scroll
 		if ln.min_size[0].unit == .Auto {
 			ln.min_size[0] = {0, .Px}
 		}

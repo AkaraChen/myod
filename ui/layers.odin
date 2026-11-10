@@ -130,6 +130,9 @@ menu_item :: proc(
 	ln := layout.Node {
 		flex_direction  = .Row,
 		align_items     = .Center,
+		// The entry fills the menu's width: hover and focus fills cover the whole row, and the whole
+		// row takes clicks, not just its icon and label.
+		align_self      = .Stretch,
 		gap             = {8, 8},
 		size            = {{0, .Auto}, {32, .Px}},
 		padding         = {12, 12, 0, 0},

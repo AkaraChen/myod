@@ -189,8 +189,10 @@ Slot :: struct {
 	anchor_valid: bool,
 	scroll_shown: [2]f32, // the offset presented last pass, to tell the user's moves from a reflow
 	// The scrollbar thumbs of a scroll container, in root coordinates, from the last layout. A zero
-	// rect means that axis does not scroll.
+	// rect means that axis does not scroll, or its thumb is hidden: thumbs only show after a scroll
+	// attempt (core/scroll.odin).
 	bar:             [2]Rect,
+	bar_until:       u64, // ms tick the thumbs stay visible until; 0: never asked
 	// Position in a list or table for assistive technology; -1 where not set (a11y.odin).
 	row_count:    i32,
 	row_index:    i32,
@@ -265,6 +267,9 @@ Context :: struct {
 	frame_start: time.Tick,
 	pass_start:  time.Tick,
 	input:       Input,
+	// When the last visible scrollbar thumb disappears, in ms ticks (0: none). The window loop wakes
+	// at that time to draw the frame without it.
+	bar_hide_at: u64,
 	// The window's text selection over body content (selection.odin).
 	sel: Text_Selection,
 }
@@ -923,6 +928,7 @@ resolve :: proc(ctx: ^Context, anchor: bool) {
 	results := layout.results(ctx.layout)
 	origin := make([][2]f32, len(t.nodes), context.temp_allocator)
 	s := ctx.scale
+	ctx.bar_hide_at = 0
 	// Scroll containers first: clamp their offsets against this pass's content extent, so child
 	// origins below see final values.
 	for &n in t.nodes {
@@ -1017,21 +1023,9 @@ resolve :: proc(ctx: ^Context, anchor: bool) {
 		slot.has_rect = true
 		slot.seen = ctx.stamp
 		slot.index = i32(i)
-		// Scrollbar thumbs: proportional to the visible part, inset 2px from the container's edges.
-		slot.bar = {}
+		// Scrollbar thumbs: only while the container is being scrolled or its thumb is held.
 		if .Scroll in n.flags {
-			if slot.scroll_max.y > 0 {
-				track := max(n.rect.h - 4, 1)
-				th := clamp(slot.scroll_view.y / (slot.scroll_view.y + slot.scroll_max.y) * track, min(24, track), track)
-				pos := slot.scroll.y / slot.scroll_max.y * (track - th)
-				slot.bar[1] = {n.rect.x + n.rect.w - 8, n.rect.y + 2 + pos, 6, th}
-			}
-			if slot.scroll_max.x > 0 {
-				track := max(n.rect.w - 4, 1)
-				tw := clamp(slot.scroll_view.x / (slot.scroll_view.x + slot.scroll_max.x) * track, min(24, track), track)
-				pos := slot.scroll.x / slot.scroll_max.x * (track - tw)
-				slot.bar[0] = {n.rect.x + 2 + pos, n.rect.y + n.rect.h - 8, tw, 6}
-			}
+			update_bars(ctx, n.id, slot, n.rect)
 		}
 	}
 	if anchor {
@@ -1293,8 +1287,9 @@ draw_range :: proc(
 				}
 			}
 			solid = paint(ctx, list, p, r, solid, a)
-			if node.id == ctx.input.focus && ctx.input.focus_visible {
-				// The focus ring: 2px of fg, 1px outside the widget (DESIGN.md, "Focus ring").
+			if node.id == ctx.input.focus && ctx.input.focus_visible && ctx.input.focus_rings {
+				// The focus ring: 2px of fg, 1px outside the widget (DESIGN.md, "Focus ring"). Drawn
+				// only when the system asks for visible focus (full keyboard access): see Input.
 				ring := Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6}
 				render.bordered(list, ring, color(ctx, .Fg, solid), 2)
 			}

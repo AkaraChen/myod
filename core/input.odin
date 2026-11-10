@@ -17,6 +17,10 @@ Input :: struct {
 	press_pos:     [2]f32,
 	focus:         Id,
 	focus_visible: bool, // focus came from the keyboard (or an assistive technology): draw the ring
+	// Whether the system asks for visible focus indicators (macOS's full keyboard access). Off by
+	// default: with the pointer as the primary input a ring around every focused control is noise.
+	// The window sets it each frame from the platform, so turning the setting on takes effect live.
+	focus_rings: bool,
 	results:       map[Id]Result,
 	// Key presses and text for the focused widget, in order, since the last consumed pass.
 	keys:          [dynamic]platform.Event,

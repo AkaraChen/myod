@@ -216,7 +216,7 @@ next_frame :: proc(w: ^Window) -> bool {
 		if w.closed {
 			return false
 		}
-		if processed || changed || w.ctx.frame_requested || w.first || redraw_due(w) || messages_pending(w) {
+		if processed || changed || w.ctx.frame_requested || w.first || redraw_due(w) || bar_due(w) || messages_pending(w) {
 			start_frame(w)
 			return begin_pass(w)
 		}
@@ -286,6 +286,9 @@ start_frame :: proc(w: ^Window) {
 	w.scale = scale
 	w.pass = 0
 	w.ctx.frame_requested = false
+	// Read every frame: the user may turn full keyboard access on or off while the app runs. A
+	// test harness has no platform window, so it never draws rings.
+	w.ctx.input.focus_rings = w.p != nil && platform.keyboard_focus_rings()
 	text.begin_frame(&w.text)
 	w.outer = core.frame_begin(&w.ctx, size, scale, theme.make_theme(w.mode), bounded = true)
 	append(&window_stack, w)
@@ -312,6 +315,13 @@ wait_for_work :: proc(w: ^Window) {
 			}
 		}
 	}
+	if w.ctx.bar_hide_at > 0 {
+		// A scrollbar thumb is about to disappear: wake to draw the frame without it.
+		ms := i64(w.ctx.bar_hide_at) - i64(_now)
+		if timeout < 0 || ms < timeout {
+			timeout = ms
+		}
+	}
 	if timeout < 0 && !w.first {
 		// Nothing is due: block until an event or another thread's wake.
 		e := platform.wait_event()
@@ -324,6 +334,12 @@ wait_for_work :: proc(w: ^Window) {
 	if e.kind != .None {
 		append(&w.events, e)
 	}
+}
+
+// Whether a scrollbar thumb has reached the end of its hold: the frame must run again to hide it.
+@(private)
+bar_due :: proc(w: ^Window) -> bool {
+	return w.ctx.bar_hide_at > 0 && platform.ticks_ms() >= w.ctx.bar_hide_at
 }
 
 // Whether a requested redraw has come due.

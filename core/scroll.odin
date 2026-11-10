@@ -141,6 +141,48 @@ ensure_visible :: proc(ctx: ^Context, id: Id) -> bool {
 
 // ---- Scrollbars (DESIGN.md, "Scrollbar") ----
 
+// How long a thumb stays on screen after the last scroll attempt. A scrollbar is feedback for
+// scrolling, not decoration: a container that merely can scroll shows nothing.
+@(private)
+BAR_HOLD_MS :: 1000
+
+// Keeps a container's thumbs visible for the next BAR_HOLD_MS.
+@(private)
+touch_bar :: proc(ctx: ^Context, id: Id) {
+	if slot, ok := ctx.slot_of[id]; ok {
+		ctx.slots[slot].bar_until = platform.ticks_ms() + BAR_HOLD_MS
+	}
+}
+
+// Fills in one container's thumbs for this pass, or leaves them empty when nothing is scrolling it.
+// A held thumb (the pointer is on it, or it is being dragged) stays visible without a deadline.
+@(private)
+update_bars :: proc(ctx: ^Context, id: Id, slot: ^Slot, rect: Rect) {
+	slot.bar = {}
+	now := platform.ticks_ms()
+	timed := now < slot.bar_until
+	held := ctx.input.bar_hot == id || ctx.input.bar_drag == id
+	if !timed && !held {
+		return
+	}
+	// Proportional to the visible part, inset 2px from the container's edges.
+	if slot.scroll_max.y > 0 {
+		track := max(rect.h - 4, 1)
+		th := clamp(slot.scroll_view.y / (slot.scroll_view.y + slot.scroll_max.y) * track, min(24, track), track)
+		pos := slot.scroll.y / slot.scroll_max.y * (track - th)
+		slot.bar[1] = {rect.x + rect.w - 8, rect.y + 2 + pos, 6, th}
+	}
+	if slot.scroll_max.x > 0 {
+		track := max(rect.w - 4, 1)
+		tw := clamp(slot.scroll_view.x / (slot.scroll_view.x + slot.scroll_max.x) * track, min(24, track), track)
+		pos := slot.scroll.x / slot.scroll_max.x * (track - tw)
+		slot.bar[0] = {rect.x + 2 + pos, rect.y + rect.h - 8, tw, 6}
+	}
+	if timed && (ctx.bar_hide_at == 0 || slot.bar_until < ctx.bar_hide_at) {
+		ctx.bar_hide_at = slot.bar_until
+	}
+}
+
 // The scroll container whose thumb is under `p`, topmost first. The thumb is drawn over the content
 // and takes the pointer before it; only the thumb responds, never the empty track.
 @(private)
@@ -172,6 +214,7 @@ scroll_bar_press :: proc(ctx: ^Context, p: [2]f32) -> bool {
 		return false
 	}
 	s := &ctx.slots[slot]
+	touch_bar(ctx, id)
 	axis := 0
 	for a in 0 ..< 2 {
 		if s.bar[a].w > 0 && contains(s.bar[a], p) {
@@ -204,6 +247,7 @@ scroll_bar_move :: proc(ctx: ^Context, p: [2]f32) {
 	}
 	s := &ctx.slots[slot]
 	axis := in_.bar_axis
+	s.bar_until = platform.ticks_ms() + BAR_HOLD_MS
 	s.scroll[axis] = clamp(in_.bar_offset + (p[axis] - in_.bar_start) * in_.bar_scale, 0, s.scroll_max[axis])
 }
 
@@ -313,8 +357,14 @@ scroll_wheel :: proc(ctx: ^Context, e: platform.Event) -> bool {
 			in_.scroll_latch[axis] = id
 		}
 		if id == 0 {
+			// A wheel over a container that has reached its end is still an attempt to scroll it:
+			// show its thumb, so the gesture has feedback.
+			if under := scroll_target_any(ctx, p); under != 0 {
+				touch_bar(ctx, under)
+			}
 			continue
 		}
+		touch_bar(ctx, id)
 		slot := ctx.slot_of[id]
 		s := &ctx.slots[slot]
 		before := s.scroll[axis]
@@ -436,6 +486,7 @@ scroll_key :: proc(ctx: ^Context, e: platform.Event) -> bool {
 	if s.scroll_max[axis] <= 0 && e.key != .Home && e.key != .End {
 		return false
 	}
+	touch_bar(ctx, target)
 	view := s.scroll_view[axis] if s.scroll_view[axis] > 0 else ctx.size[axis]
 	want: f32
 	#partial switch e.key {
