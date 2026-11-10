@@ -146,7 +146,7 @@ a11y_publish :: proc(ctx: ^Context, scale: f32, physical: [2]u32) {
 			id      = u64(n.id),
 			parent  = i64(n.parent),
 			role    = u32(n.role),
-			flags   = u32(transmute(u8)n.flags),
+			flags   = u32(transmute(u16)n.flags),
 			actions = u32(transmute(u8)n.actions),
 			row_count    = n.row_count,
 			row_index    = n.row_index,

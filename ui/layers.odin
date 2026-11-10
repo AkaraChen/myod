@@ -132,7 +132,7 @@ menu_item :: proc(
 		align_items     = .Center,
 		gap             = {8, 8},
 		size            = {{0, .Auto}, {32, .Px}},
-		padding         = {12, 0, 12, 0},
+		padding         = {12, 12, 0, 0},
 		flex_shrink     = 0,
 	}
 	flags := core.Node_Flags{.Hit, .Focusable, .Activate}
@@ -235,7 +235,7 @@ tooltip :: proc(anchor: Response, label: string) {
 		position       = 1,
 		flex_direction = .Row,
 		align_items    = .Center,
-		padding        = {8, 4, 8, 4},
+		padding        = {8, 8, 4, 4},
 	}
 	if core.open_layer(ctx, id, style, core.Paint_Box{fill = .Fg}, o) {
 		lbl := layout.Node{}
@@ -284,31 +284,39 @@ layer_id :: proc(ctx: ^core.Context, key: string) -> Id {
 
 @(private)
 Layer_State :: struct {
-	opened: bool, // the layer was open in the previous pass
 	opener: Id, // the focused widget when it opened
 	want_focus: bool,
+	anchor: Rect, // where the layer was placed on the previous pass
 }
 
-// Tracks an open layer: whether this is its opening pass, which widget had focus before it, and the
-// close message shared by Esc and clicks outside.
+// Tracks an open layer: which widget had focus before it opened, and moves the focus to one of its
+// items (a menu's first item, a selected option) on the pass after it opened. On the opening pass
+// the layer's content has not been declared yet, so that pass runs again: the focus move then lands
+// in the same frame, before the next key press is read. A menu that moves to another anchor (a
+// menubar switched to the next trigger) focuses its first item again.
 @(private)
-layer_session :: proc(ctx: ^core.Context, id: Id) {
+layer_session :: proc(ctx: ^core.Context, id: Id, focus_index := 0) {
 	st, _ := core.state(ctx, id, Layer_State)
-	if !st.opened {
-		st.opener = ctx.input.focus
-		st.want_focus = true
-	} else if st.want_focus {
-		// On the pass after opening, the previous pass knows the layer's full node range.
-		if core.focus_first_prev(ctx, id) {
-			st.want_focus = false
-		}
-	}
-	st.opened = true
+	anchor: Rect
 	for &layer in ctx.layers {
 		if layer.id == id {
 			layer.opener = st.opener
+			anchor = layer.anchor
 		}
 	}
+	if !core.layer_was_open(ctx, id) {
+		st.opener = ctx.input.focus
+		st.want_focus = true
+		core.unsettle(ctx)
+	} else if st.anchor != anchor {
+		st.want_focus = true
+		core.unsettle(ctx)
+	} else if st.want_focus {
+		if core.focus_nth_prev(ctx, id, focus_index) {
+			st.want_focus = false
+		}
+	}
+	st.anchor = anchor
 }
 
 // Sends the close message when Esc or a click outside closed the topmost layer, and restores focus

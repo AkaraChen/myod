@@ -454,6 +454,9 @@ Virtual_Grid_Options :: struct {
 	columns:       int,
 	row_height:    f32,
 	column_width:  f32,
+	// Per-column widths, overriding `column_width` (a table with resizable columns). When its length
+	// is `columns`, the grid's columns have these widths and `column_width` is ignored.
+	column_widths: []f32,
 	width, height: Size,
 	fill:          Fill,
 	border:        Border,
@@ -469,6 +472,9 @@ Virtual_Cell_Options :: struct {
 	border:        Border,
 	// Cells take keyboard focus and part in the accessibility tree unless this is set.
 	not_focusable: bool,
+	// Cells take the pointer and activation, and read the arrow keys themselves (a data table's
+	// cells: a click selects, Space/Enter selects, arrows move to another cell).
+	interactive:   bool,
 	label:         string,
 }
 
@@ -487,6 +493,8 @@ Virtual_Grid :: struct {
 	column_count: int,
 	row_height:   f32,
 	column_width: f32,
+	// Where each column starts (length column_count + 1) when the columns have different widths.
+	column_offsets: []f32,
 	id:           Id,
 	ctx:          ^core.Context,
 }
@@ -524,11 +532,29 @@ virtual_grid :: proc(o: Virtual_Grid_Options) -> Virtual_Grid {
 		view.y = 1
 	}
 
-	// The grid knows its full extent exactly: every cell has the same size.
-	core.set_scroll_content(ctx, id, {f32(o.columns) * cw, f32(o.rows) * rh})
+	// The grid knows its full extent exactly: every cell has the same size, or the widths given.
+	widths_used := len(o.column_widths) >= o.columns && o.columns > 0
+	offsets: []f32 = nil
+	total_w := f32(o.columns) * cw
+	if widths_used {
+		offsets = make([]f32, o.columns + 1, context.temp_allocator)
+		total: f32 = 0
+		for w, i in o.column_widths[:o.columns] {
+			offsets[i] = total
+			total += max(w, 1)
+		}
+		offsets[o.columns] = total
+		total_w = total
+	}
+	core.set_scroll_content(ctx, id, {total_w, f32(o.rows) * rh})
 
 	row_first, row_last, vis_row_first, vis_row_last := span(offset.y, view.y, rh, o.rows, overscan)
-	column_first, column_last, vis_col_first, vis_col_last := span(offset.x, view.x, cw, o.columns, overscan)
+	column_first, column_last, vis_col_first, vis_col_last: int
+	if widths_used {
+		column_first, column_last, vis_col_first, vis_col_last = span_offsets(offset.x, view.x, offsets, o.columns, overscan)
+	} else {
+		column_first, column_last, vis_col_first, vis_col_last = span(offset.x, view.x, cw, o.columns, overscan)
+	}
 
 	return {
 		open = true,
@@ -545,6 +571,7 @@ virtual_grid :: proc(o: Virtual_Grid_Options) -> Virtual_Grid {
 		column_count = o.columns,
 		row_height = rh,
 		column_width = cw,
+		column_offsets = offsets,
 		id = id,
 		ctx = ctx,
 	}
@@ -568,6 +595,52 @@ span :: proc(offset, view, cell: f32, count, overscan: int) -> (first, last, vis
 	return
 }
 
+// The first and last column of an axis with per-column offsets: [first, last) to declare, and
+// [visible_first, visible_last).
+@(private)
+span_offsets :: proc(offset, view: f32, offs: []f32, count, overscan: int) -> (first, last, visible_first, visible_last: int) {
+	if count <= 0 {
+		return 0, 0, 0, 0
+	}
+	visible_first = clamp(index_at(offs, max(offset, 0)), 0, count - 1)
+	visible_last = clamp(index_at(offs, max(offset, 0) + view) + 1, visible_first + 1, count)
+	first = max(visible_first - overscan, 0)
+	last = min(visible_last + overscan, count)
+	return
+}
+
+// The index of the last offset at or before `y`.
+@(private)
+index_at :: proc(offs: []f32, y: f32) -> int {
+	lo, hi := 0, len(offs) - 1
+	for lo + 1 < hi {
+		mid := (lo + hi) / 2
+		if offs[mid] <= y {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// Where a column starts and how wide it is, for a grid with or without per-column widths.
+@(private)
+cell_x :: proc(g: Virtual_Grid, column: int) -> f32 {
+	if g.column_offsets != nil {
+		return g.column_offsets[column]
+	}
+	return f32(column) * g.column_width
+}
+
+@(private)
+cell_w :: proc(g: Virtual_Grid, column: int) -> f32 {
+	if g.column_offsets != nil {
+		return max(g.column_offsets[column + 1] - g.column_offsets[column], 1)
+	}
+	return g.column_width
+}
+
 // Declares one cell of a virtual grid: absolutely positioned at its row and column, filled by the
 // caller's widgets. Cells carry their position in the table for screen readers.
 @(deferred_out = virtual_cell_close)
@@ -578,13 +651,16 @@ virtual_cell :: proc(g: Virtual_Grid, row, column: int, o: Virtual_Cell_Options 
 		flex_direction = .Column,
 		padding        = edges(o.padding),
 		gap            = {o.gap, o.gap},
-		size           = {{g.column_width, .Px}, {g.row_height, .Px}},
+		size           = {{cell_w(g, column), .Px}, {g.row_height, .Px}},
 	}
-	ln.inset[0] = {f32(column) * g.column_width, .Px}
+	ln.inset[0] = {cell_x(g, column), .Px}
 	ln.inset[2] = {f32(row) * g.row_height, .Px}
 	flags := core.Node_Flags{}
 	if !o.not_focusable {
 		flags += {.Focusable}
+	}
+	if o.interactive {
+		flags += {.Hit, .Activate, .Arrows}
 	}
 	id := core.key_id_int(ctx, row * max(g.column_count, 1) + column)
 	open := core.open(ctx, id, ln, box_paint(o.fill, o.border), clip = false, cull = false, label = o.label, flags = flags)

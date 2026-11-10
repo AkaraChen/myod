@@ -34,6 +34,10 @@ Input :: struct {
 	// Esc was pressed, or a click landed outside the top layer (both closed it; layers.odin).
 	escape:        bool,
 	click_outside: bool,
+	// Left/Right inside a menu layer: the bar that owns the menu steps to another trigger (menubar).
+	menu_step:     int,
+	// The widget the right button went down on this frame, for context menus.
+	secondary:     Id,
 }
 
 // What happened to one widget since the last consumed pass.
@@ -46,17 +50,18 @@ Result :: struct {
 
 // A widget's view of the input phase, read while it is declared.
 Interaction :: struct {
-	hovered:        bool, // under the mouse, and no other widget holds the pointer
-	pressed:        bool, // held down with the mouse over it
-	held:           bool, // holds the pointer (it may have left the widget)
-	press:          [2]f32, // where the press that is holding it began, in root coordinates
-	clicked:        bool, // a click, or activation by keyboard or accessibility
-	double_clicked: bool,
-	clicks:         int,
-	focused:        bool,
-	focus_visible:  bool,
-	gained_focus:   bool,
-	lost_focus:     bool,
+	hovered:           bool, // under the mouse, and no other widget holds the pointer
+	pressed:           bool, // held down with the mouse over it
+	held:              bool, // holds the pointer (it may have left the widget)
+	press:             [2]f32, // where the press that is holding it began, in root coordinates
+	clicked:           bool, // a click, or activation by keyboard or accessibility
+	double_clicked:    bool,
+	clicks:            int,
+	focused:           bool,
+	focus_visible:     bool,
+	gained_focus:      bool,
+	lost_focus:        bool,
+	secondary_clicked: bool, // the right button went down on it this frame (context menus)
 }
 
 // The interaction state of a widget. Widgets that take the pointer declare their node with `Hit`
@@ -69,6 +74,7 @@ interact :: proc(ctx: ^Context, id: Id) -> (it: Interaction) {
 	it.pressed = it.held && in_.hot == id
 	it.focused = in_.focus == id
 	it.focus_visible = it.focused && in_.focus_visible
+	it.secondary_clicked = in_.secondary == id
 	if r, ok := in_.results[id]; ok {
 		it.clicks = r.clicks
 		it.clicked = r.clicks == 1 || r.activated
@@ -146,6 +152,21 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		in_.mouse = e.pos
 		in_.mods = e.mods
 		in_.scroll_latch = {}
+		if e.button == .Right {
+			// The right button opens a context menu on the widget under it, and closes the topmost
+			// layer when the click lands outside it (like the left button does).
+			p := pointer(ctx)
+			if k := top_input_layer(ctx); k >= 0 {
+				t := &ctx.trees[ctx.cur]
+				if !contains(t.nodes[ctx.layers[k].start].rect, p) {
+					in_.click_outside = true
+					in_.secondary = 0
+					return true
+				}
+			}
+			in_.secondary = hit_test(ctx, p)
+			return in_.secondary != 0
+		}
 		if e.button != .Left {
 			return false
 		}
@@ -241,12 +262,20 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 				return true
 			}
 		}
-		if in_.focus != 0 && (e.key == .Up || e.key == .Down) {
-			// A menu's arrows move between its items; inside a list they move the selection.
+		if in_.focus != 0 && (e.key == .Left || e.key == .Right || e.key == .Up || e.key == .Down) {
+			// Widgets that walk the arrows themselves (table cells) get them before scrolling.
+			if node, ok := node_of(ctx, in_.focus); ok && .Arrows in node.flags {
+				append(&in_.keys, e)
+				return true
+			}
+		}
+		if in_.focus != 0 && (e.key == .Up || e.key == .Down || e.key == .Left || e.key == .Right) {
+			// A menu's arrows move between its items (Left/Right ask its bar to switch menus); inside a
+			// list they move the selection.
 			if menu_arrows(ctx, e.key) {
 				return true
 			}
-			if focus_move_in_scroll(ctx, e.key == .Up) {
+			if (e.key == .Up || e.key == .Down) && focus_move_in_scroll(ctx, e.key == .Up) {
 				return true
 			}
 		}
@@ -399,6 +428,8 @@ consume :: proc(ctx: ^Context) {
 	clear(&ctx.input.keys)
 	ctx.input.escape = false
 	ctx.input.click_outside = false
+	ctx.input.menu_step = 0
+	ctx.input.secondary = 0
 	if ctx.input.focus != 0 {
 		if _, ok := node_of(ctx, ctx.input.focus); !ok {
 			ctx.input.focus = 0

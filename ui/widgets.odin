@@ -13,6 +13,7 @@ Response :: struct {
 	rect:                                             Rect, // where it was in the last layout
 	hovered, pressed, clicked, double_clicked:        bool,
 	changed, submitted, cancelled, focused, lost_focus: bool,
+	secondary_clicked:                                 bool, // the right button went down on it,
 	// A splitter's movement since the last frame, in logical pixels along its axis.
 	drag:      f32,
 	dragging:  bool,
@@ -114,7 +115,7 @@ tag :: proc(s: string, color: Color = .Muted) -> Response {
 		align_items     = .Center,
 		justify_content = .Center,
 		size            = {{0, .Auto}, {20, .Px}},
-		padding         = {6, 0, 6, 0},
+		padding         = {6, 6, 0, 0},
 	}
 	opened := core.open(ctx, id, ln, core.Paint_Box{border = token(color), border_width = 1})
 	if opened {

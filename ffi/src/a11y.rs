@@ -13,8 +13,8 @@ pub use macos::*;
 #[cfg(target_os = "macos")]
 mod macos {
     use accesskit::{
-        Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, TextDirection,
-        TextPosition, TextSelection, TreeId, TreeInfo, TreeUpdate,
+        Action, ActionHandler, ActionRequest, ActivationHandler, Live, Node, NodeId, Role, Toggled,
+        TextDirection, TextPosition, TextSelection, TreeId, TreeInfo, TreeUpdate,
     };
     use accesskit_macos::SubclassingAdapter;
     use std::ffi::c_void;
@@ -156,6 +156,12 @@ mod macos {
             17 => Role::Table,
             18 => Role::Row,
             19 => Role::Cell,
+            20 => Role::MenuBar,
+            21 => Role::ListBox,
+            22 => Role::ListBoxOption,
+            23 => Role::AlertDialog,
+            24 => Role::Navigation,
+            25 => Role::Status,
             _ => Role::Unknown,
         }
     }
@@ -238,10 +244,28 @@ mod macos {
                 node.set_column_index(n.column_index as usize);
             }
             // A11y_Flag: Disabled, Focused, Focus_Visible, Selected, Checked, Expanded, Pressed,
-            // Read_Only.
+            // Read_Only, Live.
             let disabled = n.flags & 1 != 0;
             if disabled {
                 node.set_disabled();
+            }
+            if n.flags & 8 != 0 {
+                node.set_selected(true);
+            }
+            if n.flags & 16 != 0 {
+                node.set_toggled(Toggled::True);
+            }
+            if n.flags & 32 != 0 {
+                node.set_expanded(true);
+            }
+            if n.flags & 64 != 0 {
+                node.set_toggled(Toggled::True);
+            }
+            if n.flags & 128 != 0 {
+                node.set_read_only();
+            }
+            if n.flags & 256 != 0 {
+                node.set_live(Live::Polite);
             }
             if n.actions & ACTION_CLICK != 0 {
                 node.add_action(Action::Click);

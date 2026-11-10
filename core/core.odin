@@ -124,6 +124,7 @@ Node_Flag :: enum u8 {
 	Menu, // a layer whose items arrows move through
 	Sticky, // stays at the top of the nearest scrolling ancestor (positioning phase)
 	Adjust, // the widget uses the arrow keys itself (a slider, a splitter)
+	Arrows, // the widget reads the arrow keys itself (table cells move between cells)
 	Text_Edit, // a text field: the platform's text input is on while it has focus
 }
 Node_Flags :: bit_set[Node_Flag;u16]
@@ -145,6 +146,9 @@ Node :: struct {
 	role:         Role,
 	name:         string,
 	a11y_value:   string,
+	// Extra semantic state the widget set itself (`set_a11y_state`): selected, expanded, a live
+	// region. Merged into the flags of the semantic tree (a11y.odin).
+	a11y_state:  A11y_Flags,
 	// The text run a text field exposes to screen readers (`set_a11y_text`): the text, where the
 	// caret and selection anchor are in it, and how it is laid out.
 	a11y_run:        bool,
@@ -287,6 +291,16 @@ Layer :: struct {
 	align:  f32, // 0 starts at the anchor's left edge, 0.5 centers, 1 ends at its right edge
 	center: bool, // ignore the anchor and center the layer in the window
 	bottom_right: bool, // toasts: the bottom-right corner of the window, ignoring the anchor
+	edge:   Layer_Edge, // sheets and drawers: flush against a window edge
+}
+
+// The window edge a layer is attached to (sheets, drawers), or None.
+Layer_Edge :: enum u8 {
+	None,
+	Left,
+	Right,
+	Top,
+	Bottom,
 }
 
 @(private, thread_local)
@@ -594,6 +608,7 @@ open :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint = nil, grid
 }
 
 close :: proc(ctx: ^Context) {
+	assert(len(ctx.stack) > 1, "myod: close without a matching open")
 	assert(len(ctx.stack) > 1, "myod: close without a matching open")
 	index := pop(&ctx.stack)
 	pop(&ctx.scopes)
@@ -938,6 +953,23 @@ resolve :: proc(ctx: ^Context, anchor: bool) {
 					if layer.bottom_right {
 						x = ctx.viewport.x + ctx.viewport.w - w - 16
 						y = ctx.viewport.y + ctx.viewport.h - h - 16
+					} else if layer.edge != .None {
+						// A sheet or drawer is flush against a window edge.
+						switch layer.edge {
+						case .Left:
+							x = ctx.viewport.x
+							y = ctx.viewport.y
+						case .Right:
+							x = ctx.viewport.x + ctx.viewport.w - w
+							y = ctx.viewport.y
+						case .Top:
+							x = ctx.viewport.x
+							y = ctx.viewport.y
+						case .Bottom:
+							x = ctx.viewport.x
+							y = ctx.viewport.y + ctx.viewport.h - h
+						case .None:
+						}
 					} else if layer.center || layer.anchor == {} {
 						x = ctx.viewport.x + (ctx.viewport.w - w) / 2
 						y = ctx.viewport.y + (ctx.viewport.h - h) / 2

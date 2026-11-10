@@ -1,3 +1,5 @@
 /build/
 /third_party/result*
+/ui.bin
+/ui.bin.dSYM/
 .DS_Store

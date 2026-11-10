@@ -20,7 +20,20 @@ open_layer :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint, o: L
 	if o.menu {
 		f += {.Menu}
 	}
-	opened := open(ctx, id, style, paint, clip = false, cull = false, label = label, flags = f)
+	// A sheet or drawer spans the window along its edge; the other axis comes from the style.
+	s := style
+	switch o.edge {
+	case .Left, .Right:
+		s.size[1] = {ctx.size.y, .Px}
+		s.min_size[1] = {}
+		s.max_size[1] = {}
+	case .Top, .Bottom:
+		s.size[0] = {ctx.size.x, .Px}
+		s.min_size[0] = {}
+		s.max_size[0] = {}
+	case .None:
+	}
+	opened := open(ctx, id, s, paint, clip = false, cull = false, label = label, flags = f)
 	if opened && len(ctx.layers) > 0 {
 		layer := &ctx.layers[len(ctx.layers) - 1]
 		layer.anchor = o.anchor
@@ -30,6 +43,7 @@ open_layer :: proc(ctx: ^Context, id: Id, style: layout.Node, paint: Paint, o: L
 		layer.above = o.above
 		layer.no_input = o.no_input
 		layer.bottom_right = o.bottom_right
+		layer.edge = o.edge
 	}
 	return opened
 }
@@ -44,6 +58,7 @@ Layer_Options :: struct {
 	above:    bool, // place above the anchor (tooltips); flips below near the top edge
 	no_input: bool, // tooltips: no pointer, no Esc or outside-click handling
 	bottom_right: bool, // toasts: the window's bottom-right corner
+	edge:     Layer_Edge, // sheets and drawers: flush against a window edge
 }
 
 // Whether the node at `index` is inside a layer (itself included).
@@ -93,12 +108,32 @@ top_input_layer :: proc(ctx: ^Context) -> int {
 	return -1
 }
 
-// The same, for a layer that was open in the previous pass (seen from its opening pass).
-focus_first_prev :: proc(ctx: ^Context, layer_id: Id, visible := true) -> bool {
+// The same, for a layer that was open in the previous pass (seen from the pass after it opened).
+// The range indexes the previous pass's tree, and on this pass the layer's content has not been
+// declared yet when this runs, so the scan has to happen in that tree. `index` picks the nth
+// focusable node (0: the first) and is clamped to what the layer holds.
+focus_nth_prev :: proc(ctx: ^Context, layer_id: Id, index: int, visible := true) -> bool {
 	for &layer in ctx.layers_prev {
-		if layer.id == layer_id {
-			return focus_range(ctx, layer.start, layer.end, visible)
+		if layer.id != layer_id {
+			continue
 		}
+		t := &ctx.trees[1 - ctx.cur]
+		ids := make([dynamic]Id, 0, 16, context.temp_allocator)
+		for i := int(layer.start); i < int(layer.end) && i < len(t.nodes); i += 1 {
+			n := &t.nodes[i]
+			if is_disabled(t, i32(i)) || .Culled in n.flags {
+				i = int(n.end) - 1
+				continue
+			}
+			if .Focusable in n.flags {
+				append(&ids, n.id)
+			}
+		}
+		if len(ids) == 0 {
+			return false
+		}
+		set_focus(ctx, ids[clamp(index, 0, len(ids) - 1)], visible)
+		return true
 	}
 	return false
 }
@@ -186,7 +221,8 @@ focus_range :: proc(ctx: ^Context, from, to: i32, visible: bool) -> bool {
 	return false
 }
 
-// Arrow keys inside a menu layer move focus from item to item.
+// Arrow keys inside a menu layer: Up/Down move focus from item to item, Left/Right ask the bar the
+// menu belongs to (a menubar, a navigation menu) to step to another trigger, through `menu_step`.
 @(private)
 menu_arrows :: proc(ctx: ^Context, key: platform.Key) -> bool {
 	in_ := &ctx.input
@@ -208,7 +244,18 @@ menu_arrows :: proc(ctx: ^Context, key: platform.Key) -> bool {
 	if actual >= 0 && !ctx.layers[actual].menu {
 		return false
 	}
+	if key == .Left || key == .Right {
+		in_.menu_step = -1 if key == .Left else 1
+		return true
+	}
 	return move_focus_within(ctx, top.start, top.end, key == .Up)
+}
+
+// `menu_arrows` with Left or Right: the bar that owns the open menu should show the trigger `step`
+// places away (-1: left, 1: right). It is cleared after the accepted pass, so the bar can read it
+// from a rerun of the same frame.
+menu_step :: proc(ctx: ^Context) -> int {
+	return ctx.input.menu_step
 }
 
 // Tab either cycles inside the topmost modal layer or leaves it (which closes it).

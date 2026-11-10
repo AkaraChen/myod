@@ -154,6 +154,7 @@ response_interactive :: proc(ctx: ^core.Context, id: Id, disabled: bool) -> Resp
 	res.pressed = it.pressed
 	res.clicked = it.clicked
 	res.double_clicked = it.double_clicked
+	res.secondary_clicked = it.secondary_clicked
 	return res
 }
 
@@ -427,7 +428,7 @@ tabs :: proc(value: $E, labels: [E]string, disabled := false) -> (Response, E) {
 					align_items     = .Center,
 					justify_content = .Center,
 					size            = {{0, .Auto}, {32, .Px}},
-					padding         = {12, 0, 12, 0},
+					padding         = {12, 12, 0, 0},
 				}
 				flags := core.Node_Flags{.Hit, .Focusable, .Activate}
 				if disabled {

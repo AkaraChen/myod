@@ -36,6 +36,12 @@ Role :: enum u8 {
 	Table,
 	Row,
 	Cell,
+	Menu_Bar,
+	List_Box,
+	Option,
+	Alert_Dialog,
+	Navigation,
+	Status,
 }
 
 A11y_Flag :: enum u8 {
@@ -47,8 +53,9 @@ A11y_Flag :: enum u8 {
 	Expanded,
 	Pressed,
 	Read_Only,
+	Live, // a live region: screen readers announce changes inside it
 }
-A11y_Flags :: bit_set[A11y_Flag;u8]
+A11y_Flags :: bit_set[A11y_Flag;u16]
 
 A11y_Action :: enum u8 {
 	Click, // press it
@@ -126,6 +133,19 @@ set_cell :: proc(ctx: ^Context, id: Id, column_count, column_index: int) {
 	if slot, ok := ctx.slot_of[id]; ok {
 		ctx.slots[slot].column_count = i32(column_count)
 		ctx.slots[slot].column_index = i32(column_index)
+	}
+}
+
+// Sets semantic state the declaration heuristics cannot infer: selected (a chosen option, a
+// selected cell), expanded (an accordion header), a live region (a toast list). Call it right after
+// the node is declared.
+set_a11y_state :: proc(ctx: ^Context, id: Id, flags: A11y_Flags) {
+	t := &ctx.trees[ctx.cur]
+	#reverse for &n in t.nodes {
+		if n.id == id {
+			n.a11y_state = flags
+			return
+		}
 	}
 }
 
@@ -302,6 +322,7 @@ a11y_build :: proc(ctx: ^Context) {
 				flags += {.Focus_Visible}
 			}
 		}
+		flags += n.a11y_state
 		actions := A11y_Actions{}
 		if !disabled {
 			if .Hit in n.flags {
@@ -453,6 +474,12 @@ role_name :: proc(r: Role) -> string {
 	case .Table:       return "table"
 	case .Row:         return "row"
 	case .Cell:        return "cell"
+	case .Menu_Bar:    return "menu-bar"
+	case .List_Box:    return "list-box"
+	case .Option:      return "option"
+	case .Alert_Dialog: return "alert-dialog"
+	case .Navigation:  return "navigation"
+	case .Status:      return "status"
 	}
 	return "none"
 }
