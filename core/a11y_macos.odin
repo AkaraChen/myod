@@ -26,6 +26,18 @@ Ax_Node :: struct {
 	name_len:   uintptr,
 	value:      [^]u8,
 	value_len:  uintptr,
+	text:       [^]u8,
+	text_len:   uintptr,
+	char_lengths:     [^]u8,
+	char_lengths_len: uintptr,
+	word_starts:      [^]u8,
+	word_starts_len:  uintptr,
+	char_positions:     [^]f32,
+	char_positions_len: uintptr,
+	char_widths:        [^]f32,
+	char_widths_len:    uintptr,
+	sel_a:      i32,
+	sel_b:      i32,
 }
 
 foreign {
@@ -115,6 +127,21 @@ a11y_publish :: proc(ctx: ^Context, scale: f32, physical: [2]u32) {
 	}
 	nodes := make([]Ax_Node, len(ctx.a11y), context.temp_allocator)
 	for n, i in ctx.a11y {
+		// Text run positions are in the same space as the node's bounds: physical pixels.
+		positions: []f32
+		widths: []f32
+		if len(n.char_positions) > 0 {
+			positions = make([]f32, len(n.char_positions), context.temp_allocator)
+			for x, k in n.char_positions {
+				positions[k] = x * scale
+			}
+		}
+		if len(n.char_widths) > 0 {
+			widths = make([]f32, len(n.char_widths), context.temp_allocator)
+			for w, k in n.char_widths {
+				widths[k] = w * scale
+			}
+		}
 		nodes[i] = {
 			id      = u64(n.id),
 			parent  = i64(n.parent),
@@ -133,6 +160,18 @@ a11y_publish :: proc(ctx: ^Context, scale: f32, physical: [2]u32) {
 			name_len = uintptr(len(n.name)),
 			value   = raw_data(n.value),
 			value_len = uintptr(len(n.value)),
+			text      = raw_data(n.text),
+			text_len  = uintptr(len(n.text)),
+			char_lengths     = raw_data(n.char_lengths),
+			char_lengths_len = uintptr(len(n.char_lengths)),
+			word_starts      = raw_data(n.word_starts),
+			word_starts_len  = uintptr(len(n.word_starts)),
+			char_positions     = raw_data(positions),
+			char_positions_len = uintptr(len(positions)),
+			char_widths        = raw_data(widths),
+			char_widths_len    = uintptr(len(widths)),
+			sel_a     = n.sel_a,
+			sel_b     = n.sel_b,
 		}
 	}
 	focus := u64(ctx.input.focus)

@@ -49,6 +49,7 @@ Interaction :: struct {
 	hovered:        bool, // under the mouse, and no other widget holds the pointer
 	pressed:        bool, // held down with the mouse over it
 	held:           bool, // holds the pointer (it may have left the widget)
+	press:          [2]f32, // where the press that is holding it began, in root coordinates
 	clicked:        bool, // a click, or activation by keyboard or accessibility
 	double_clicked: bool,
 	clicks:         int,
@@ -63,6 +64,7 @@ Interaction :: struct {
 interact :: proc(ctx: ^Context, id: Id) -> (it: Interaction) {
 	in_ := &ctx.input
 	it.held = in_.active == id
+	it.press = in_.press_pos
 	it.hovered = in_.hot == id && (in_.active == 0 || in_.active == id)
 	it.pressed = it.held && in_.hot == id
 	it.focused = in_.focus == id
@@ -85,9 +87,24 @@ keys :: proc(ctx: ^Context, id: Id) -> []platform.Event {
 	return ctx.input.keys[:]
 }
 
+// Hands the key and text events to a widget that reads them itself: they are cleared, so an edit is
+// applied once even when the pass reruns as a ghost pass. The slice stays valid this frame.
+take_keys :: proc(ctx: ^Context, id: Id) -> []platform.Event {
+	events := keys(ctx, id)
+	if len(events) > 0 {
+		clear(&ctx.input.keys)
+	}
+	return events
+}
+
 // Where the pointer is, in the root's coordinates (the same space as node rects).
 pointer :: proc(ctx: ^Context) -> [2]f32 {
 	return ctx.input.mouse + {ctx.viewport.x, ctx.viewport.y}
+}
+
+// `pointer` for widgets: the input phase's cursor position in root coordinates.
+pointer_pos :: proc(ctx: ^Context) -> [2]f32 {
+	return pointer(ctx)
 }
 
 // Applies one event to the input state. Returns whether it may change what is drawn (a pure mouse
@@ -101,6 +118,11 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 		in_.mods = e.mods
 		if in_.bar_drag != 0 {
 			scroll_bar_move(ctx, pointer(ctx))
+			return true
+		}
+		if ctx.sel.dragging && in_.active == 0 {
+			// A drag selection over body text: hover changes are not what is being tracked.
+			selection_drag(ctx)
 			return true
 		}
 		old := in_.hot
@@ -143,6 +165,17 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 			}
 		}
 		in_.hot = hit_test(ctx, pointer(ctx))
+		if in_.hot == 0 && top_input_layer(ctx) < 0 {
+			// Nothing takes the pointer: a press on body text starts a selection.
+			if pos, ok := text_hit(ctx, p); ok {
+				set_focus(ctx, 0, false)
+				selection_begin(ctx, pos)
+				in_.active = 0
+				in_.press_pos = e.pos
+				return true
+			}
+		}
+		selection_clear(ctx)
 		in_.active = in_.hot
 		in_.press_pos = e.pos
 		node, ok := node_of(ctx, in_.hot)
@@ -161,6 +194,12 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 			return true
 		}
 		if e.button != .Left || in_.active == 0 {
+			if e.button == .Left && ctx.sel.dragging {
+				// The drag ends: a double or triple click then selects a word or a paragraph.
+				ctx.sel.dragging = false
+				selection_click(ctx, e.clicks)
+				return true
+			}
 			return in_.active != 0
 		}
 		in_.hot = hit_test(ctx, pointer(ctx))
@@ -187,6 +226,20 @@ handle_event :: proc(ctx: ^Context, e: platform.Event) -> bool {
 				ensure_visible(ctx, in_.focus)
 			}
 			return true
+		}
+		if in_.focus != 0 {
+			// A text field reads the keys itself: arrows, Home/End, Backspace and the shortcuts all
+			// belong to the text, not to scrolling or the widget's activation.
+			if node, ok := node_of(ctx, in_.focus); ok && .Text_Edit in node.flags {
+				append(&in_.keys, e)
+				return true
+			}
+		}
+		if e.key == .Char && e.char == 'c' && e.mods & {.Super, .Ctrl} != {} {
+			// Copy the body text selection (a text field copied in its own branch above).
+			if selection_copy(ctx) {
+				return true
+			}
 		}
 		if in_.focus != 0 && (e.key == .Up || e.key == .Down) {
 			// A menu's arrows move between its items; inside a list they move the selection.

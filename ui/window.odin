@@ -66,6 +66,9 @@ Window :: struct {
 	focus_key: string, // from the focus effect, resolved after the next pass
 	focus_buf: [256]u8,
 	bound: bool, // the window holds its final address: self-pointers are set
+	// Whether the platform's text input (keyboard text and input methods) is on: it follows focus
+	// between text fields and everything else.
+	text_input_on: bool,
 	// Debug.
 	debug_input: bool,
 }
@@ -454,6 +457,7 @@ present :: proc(w: ^Window) {
 		core.a11y_publish(&w.ctx, scale, size)
 		add_overlays(w, &list)
 		submit(w, &list, size, scale, t)
+		sync_text_input(w)
 	}
 	w.presents += 1
 	w.drawn = true
@@ -536,6 +540,27 @@ hash_commands :: proc(list: ^render.Command_List) -> u64 {
 		}
 	}
 	return core.mix(h, u64(len(list.commands)))
+}
+
+// Turns the platform's text input on while a text field has focus, off otherwise: with it off the
+// IME stays quiet and the text cursor of the system is not shown (ARCHITECTURE.md, "API design → 16").
+@(private)
+sync_text_input :: proc(w: ^Window) {
+	want := false
+	if w.ctx.input.focus != 0 {
+		if flags, ok := core.flags_of(&w.ctx, w.ctx.input.focus); ok && .Text_Edit in flags {
+			want = true
+		}
+	}
+	if want == w.text_input_on {
+		return
+	}
+	w.text_input_on = want
+	if want {
+		platform.start_text_input(w.p)
+	} else {
+		platform.stop_text_input(w.p)
+	}
 }
 
 // ---- Live resize ----

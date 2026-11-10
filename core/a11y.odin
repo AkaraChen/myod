@@ -10,6 +10,10 @@ package core
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:unicode/utf8"
+
+import "../text"
+import ub "../third_party/odin/unibreak"
 
 Role :: enum u8 {
 	None,
@@ -70,6 +74,17 @@ A11y_Node :: struct {
 	row_index:    i32,
 	column_count: i32,
 	column_index: i32,
+	// The text run screen readers read by character, word and line (a `TextRun` child in AccessKit):
+	// the text, the UTF-8 length of each character, the character indices where words start, and
+	// each character's x and advance width in logical pixels relative to `rect`. The selection is
+	// two byte offsets into `text` (-1 when there is none).
+	text:           string,
+	char_lengths:   []u8,
+	word_starts:    []u8,
+	char_positions: []f32,
+	char_widths:    []f32,
+	sel_a:          i32,
+	sel_b:          i32,
 }
 
 // Overrides the role the declaration heuristics picked, for widgets whose semantics they cannot
@@ -79,6 +94,18 @@ set_a11y_role :: proc(ctx: ^Context, id: Id, role: Role) {
 	#reverse for &n in t.nodes {
 		if n.id == id {
 			n.role = role
+			return
+		}
+	}
+}
+
+// The text of a text field, which screen readers read character by character. Call it after the
+// node was declared; the string must stay valid until the pass is built (the field's state owns it).
+set_a11y_value :: proc(ctx: ^Context, id: Id, value: string) {
+	t := &ctx.trees[ctx.cur]
+	#reverse for &n in t.nodes {
+		if n.id == id {
+			n.a11y_value = value
 			return
 		}
 	}
@@ -99,6 +126,34 @@ set_cell :: proc(ctx: ^Context, id: Id, column_count, column_index: int) {
 	if slot, ok := ctx.slot_of[id]; ok {
 		ctx.slots[slot].column_count = i32(column_count)
 		ctx.slots[slot].column_index = i32(column_index)
+	}
+}
+
+// Records a text field's text run: what a screen reader reads, the caret and the selection anchor
+// as byte offsets into `text`, and how the text is laid out (its style, its wrap width when it is
+// multi-line, its scroll and the inset from the node's left edge). Call it after the node was
+// declared; the string must stay valid until the pass is built.
+set_a11y_text :: proc(
+	ctx: ^Context,
+	id: Id,
+	text_string: string,
+	anchor, caret: int,
+	style: text.Style,
+	wrap_width, scroll, inset_x: f32,
+) {
+	t := &ctx.trees[ctx.cur]
+	#reverse for &n in t.nodes {
+		if n.id == id {
+			n.a11y_run = true
+			n.a11y_text = text_string
+			n.a11y_anchor = anchor
+			n.a11y_caret = caret
+			n.a11y_style = style
+			n.a11y_wrap_width = wrap_width
+			n.a11y_scroll = scroll
+			n.a11y_inset_x = inset_x
+			return
+		}
 	}
 }
 
@@ -144,6 +199,74 @@ a11y_declare :: proc(n: ^Node, label: string) {
 			n.name = label
 		}
 	}
+}
+
+// ---- Text runs ----
+
+// Fills a text node's run from `s`: one entry per character, word starts from UAX #29, and each
+// character's x and advance width. Positions are relative to `a.rect`; `anchor` and `caret` are
+// byte offsets into `s` (-1 when there is no selection or caret).
+@(private)
+a11y_text_run :: proc(
+	ctx: ^Context,
+	a: ^A11y_Node,
+	s: string,
+	style: text.Style,
+	wrap_width, scroll, inset_x: f32,
+	anchor, caret: int,
+) {
+	a.text = s
+	a.sel_a, a.sel_b = i32(anchor), i32(caret)
+	if len(s) == 0 {
+		return
+	}
+	scale := ctx.scale
+	x_at := text.caret_positions(ctx.text, s, style, scale, context.temp_allocator)
+	lines: []text.Line
+	if wrap_width > 0 {
+		lines = text.wrap(ctx.text, s, style, wrap_width, scale, context.temp_allocator)
+	}
+	starts := make([dynamic]int, 0, len(s), context.temp_allocator)
+	lengths := make([dynamic]u8, 0, len(s), context.temp_allocator)
+	for i := 0; i < len(s); {
+		_, size := utf8.decode_rune_in_string(s[i:])
+		append(&starts, i)
+		append(&lengths, u8(max(size, 1)))
+		i += max(size, 1)
+	}
+	pos := make([]f32, len(starts), context.temp_allocator)
+	wid := make([]f32, len(starts), context.temp_allocator)
+	li := 0
+	for b, k in starts {
+		x0: f32 = 0
+		inside := true
+		if len(lines) > 0 {
+			for li + 1 < len(lines) && b >= lines[li + 1].start {
+				li += 1
+			}
+			x0 = lines[li].x0 / scale
+			// Trailing spaces and the line break itself lie past the line's drawn range.
+			inside = b < lines[li].end
+		}
+		pos[k] = inset_x + x_at[b] - x0 - scroll
+		next := len(s) if k + 1 >= len(starts) else starts[k + 1]
+		wid[k] = max(x_at[next] - x_at[b], 0) if inside else 0
+	}
+	a.char_lengths, a.char_positions, a.char_widths = lengths[:], pos, wid
+
+	// Word starts, as character indices. AccessKit stores them in bytes, so later words do not fit.
+	brks := make([]u8, len(s), context.temp_allocator)
+	ub.set_wordbreaks_utf8(raw_data(s), uint(len(s)), nil, raw_data(brks))
+	words := make([dynamic]u8, 0, 16, context.temp_allocator)
+	for b, k in starts {
+		if k > 255 {
+			break
+		}
+		if k == 0 || brks[b - 1] == ub.WORDBREAK_BREAK {
+			append(&words, u8(k))
+		}
+	}
+	a.word_starts = words[:]
 }
 
 // ---- Building ----
@@ -197,6 +320,25 @@ a11y_build :: proc(ctx: ^Context) {
 			rect    = n.rect,
 			flags   = flags,
 			actions = actions,
+			sel_a   = -1,
+			sel_b   = -1,
+		}
+		// Text runs: static text from what it draws (with the body selection on it), text fields
+		// from what the widget recorded.
+		if pt, is_text := n.paint.(Paint_Text); is_text && a.role == .Static_Text && len(pt.s) > 0 {
+			anchor, caret := -1, -1
+			if ctx.sel.active {
+				if ra, rb, ok := selection_text_range(ctx, i, pt.s); ok {
+					anchor, caret = ra, rb
+				} else if ctx.sel.cursor.id == n.id {
+					c := clamp(ctx.sel.cursor.offset, 0, len(pt.s))
+					anchor, caret = c, c
+				}
+			}
+			a11y_text_run(ctx, &a, pt.s, pt.style, n.rect.w if pt.wrap else 0, 0, 0, anchor, caret)
+		}
+		if n.a11y_run {
+			a11y_text_run(ctx, &a, n.a11y_text, n.a11y_style, n.a11y_wrap_width, n.a11y_scroll, n.a11y_inset_x, n.a11y_anchor, n.a11y_caret)
 		}
 		slot := &ctx.slots[n.slot]
 		a.row_count, a.row_index = slot.row_count, slot.row_index

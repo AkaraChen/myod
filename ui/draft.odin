@@ -4,7 +4,4 @@
 package ui
 
 // Windows, the frame loop, the Store, effects and tasks live in window.odin and store.odin.
-// The button lives in controls.odin.
-
-// ---- Widgets ----
-text_input :: proc(label: string, value: string, width: Size = {}, hide_label := false, autofocus := false, key := "", error := "") -> (Response, string) { return {}, "" }
+// The button lives in controls.odin; the text fields in input.odin.

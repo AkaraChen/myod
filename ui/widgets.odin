@@ -43,13 +43,29 @@ Color :: enum {
 	Info,
 }
 
-// Text in one of the type roles. It wraps to the width it gets unless `wrap` is false.
-text :: proc(s: string, style: Text_Style = .Body, color: Color = .Fg, width: Size = {}, wrap := true) -> Response {
+// Text in one of the type roles. It wraps to the width it gets unless `wrap` is false. Body text is
+// selectable by default (ARCHITECTURE.md, "API design → 16"); `interactive` text takes clicks
+// instead and is not selectable (a todo title that enters edit mode on a double click).
+text :: proc(
+	s: string,
+	style: Text_Style = .Body,
+	color: Color = .Fg,
+	width: Size = {},
+	wrap := true,
+	interactive := false,
+) -> Response {
 	ctx := core.current()
 	id := core.auto_id(ctx)
 	ln: layout.Node
 	item(ctx, &ln, width, {})
-	core.leaf(ctx, id, ln, core.Paint_Text{s = s, style = text_style(style), color = token(color), wrap = wrap}, measured = true)
+	flags := core.Node_Flags{}
+	if interactive {
+		flags += {.Hit}
+	}
+	core.leaf(ctx, id, ln, core.Paint_Text{s = s, style = text_style(style), color = token(color), wrap = wrap}, measured = true, flags = flags)
+	if interactive {
+		return response_interactive(ctx, id, false)
+	}
 	return response(ctx, id)
 }
 

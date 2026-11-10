@@ -16,6 +16,10 @@ taffy = { version = "=0.15.1", default-features = false, features = ["std", "fle
 accesskit = "=0.25.2"
 accesskit_macos = "=0.27.2"
 
+# The tests read the tree back the way a screen reader does.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+accesskit_consumer = "=0.39.2"
+
 [profile.release]
 panic = "abort"
 opt-level = "s"

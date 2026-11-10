@@ -13,8 +13,8 @@ pub use macos::*;
 #[cfg(target_os = "macos")]
 mod macos {
     use accesskit::{
-        Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, TreeId,
-        TreeInfo, TreeUpdate,
+        Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, TextDirection,
+        TextPosition, TextSelection, TreeId, TreeInfo, TreeUpdate,
     };
     use accesskit_macos::SubclassingAdapter;
     use std::ffi::c_void;
@@ -41,6 +41,22 @@ mod macos {
         pub name_len: usize,
         pub value: *const u8,
         pub value_len: usize,
+        /// The text run this node exposes (screen readers read it by character, word and line):
+        /// the text, the UTF-8 byte length of each character, the character indices where words
+        /// start, and each character's x and advance width in logical pixels relative to the
+        /// node's rect. `sel_a` and `sel_b` are byte offsets into `text`, or -1.
+        pub text: *const u8,
+        pub text_len: usize,
+        pub char_lengths: *const u8,
+        pub char_lengths_len: usize,
+        pub word_starts: *const u8,
+        pub word_starts_len: usize,
+        pub char_positions: *const f32,
+        pub char_positions_len: usize,
+        pub char_widths: *const f32,
+        pub char_widths_len: usize,
+        pub sel_a: i32,
+        pub sel_b: i32,
     }
 
     /// What the adapter needs to build an update: owned copies, made when Odin calls
@@ -70,6 +86,13 @@ mod macos {
         h: f64,
         name: String,
         value: String,
+        text: String,
+        char_lengths: Vec<u8>,
+        word_starts: Vec<u8>,
+        char_positions: Vec<f32>,
+        char_widths: Vec<f32>,
+        sel_a: i32,
+        sel_b: i32,
     }
 
     // AccessKit's root: not a widget id, so it cannot collide with one.
@@ -137,6 +160,43 @@ mod macos {
         }
     }
 
+    /// Copies a text run's per-character byte lengths or word starts out of the call's arrays.
+    fn copy_bytes(p: *const u8, len: usize) -> Vec<u8> {
+        if len == 0 || p.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(p, len) }.to_vec()
+    }
+
+    /// Copies a text run's per-character positions or widths.
+    fn copy_floats(p: *const f32, len: usize) -> Vec<f32> {
+        if len == 0 || p.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(p, len) }.to_vec()
+    }
+
+    /// A text run's NodeId: derived from its widget's id, so it is stable across frames. Widget ids
+    /// are 64-bit hashes already, so a mixed value collides with one with negligible probability.
+    fn run_id(parent: u64) -> u64 {
+        let mut z = parent ^ 0x9E37_79B9_7F4A_7C15;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// The character index of a byte offset in a text run (AccessKit counts characters, not bytes).
+    fn char_index(text: &str, byte: i32) -> usize {
+        if byte <= 0 {
+            return 0;
+        }
+        let mut b = (byte as usize).min(text.len());
+        while b > 0 && !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        text[..b].chars().count()
+    }
+
     /// Builds a full TreeUpdate. Sending every node on every frame is cheap at our sizes, and the
     /// adapter computes the differences before notifying the platform.
     fn build(s: Snapshot) -> TreeUpdate {
@@ -165,10 +225,6 @@ mod macos {
                 x1: n.x + n.w,
                 y1: n.y + n.h,
             });
-            if !children[i].is_empty() {
-                node.set_children(children[i].clone());
-            }
-            // Zero-based row and column position, for lists and tables (AccessKit's convention).
             if n.row_count >= 0 {
                 node.set_row_count(n.row_count as usize);
             }
@@ -193,7 +249,54 @@ mod macos {
             if n.actions & ACTION_FOCUS != 0 {
                 node.add_action(Action::Focus);
             }
+            // A text run, so screen readers can read this node's text by character, word and line,
+            // and follow the caret and the selection. Its node id is derived from the widget's.
+            let mut run = None;
+            if !n.char_lengths.is_empty() && !n.text.is_empty() {
+                let rid = NodeId(run_id(n.id));
+                let mut text_run = Node::new(Role::TextRun);
+                text_run.set_value(n.text.clone());
+                text_run.set_bounds(accesskit::Rect {
+                    x0: n.x,
+                    y0: n.y,
+                    x1: n.x + n.w,
+                    y1: n.y + n.h,
+                });
+                // The layout is horizontal and left to right; AccessKit needs it to turn a point
+                // inside the run into a character index.
+                text_run.set_text_direction(TextDirection::LeftToRight);
+                text_run.set_character_lengths(n.char_lengths.clone());
+                if !n.word_starts.is_empty() {
+                    text_run.set_word_starts(n.word_starts.clone());
+                }
+                if n.char_positions.len() == n.char_lengths.len() {
+                    text_run.set_character_positions(n.char_positions.clone());
+                }
+                if n.char_widths.len() == n.char_lengths.len() {
+                    text_run.set_character_widths(n.char_widths.clone());
+                }
+                if n.sel_a >= 0 && n.sel_b >= 0 {
+                    node.set_text_selection(TextSelection {
+                        anchor: TextPosition {
+                            node: rid,
+                            character_index: char_index(&n.text, n.sel_a),
+                        },
+                        focus: TextPosition {
+                            node: rid,
+                            character_index: char_index(&n.text, n.sel_b),
+                        },
+                    });
+                }
+                children[i].push(rid);
+                run = Some((rid, text_run));
+            }
+            if !children[i].is_empty() {
+                node.set_children(children[i].clone());
+            }
             nodes.push((NodeId(n.id), node));
+            if let Some(run) = run {
+                nodes.push(run);
+            }
         }
 
         let mut root = Node::new(Role::Window);
@@ -276,6 +379,16 @@ mod macos {
             } else {
                 String::new()
             };
+            let text = if n.text_len > 0 && !n.text.is_null() {
+                let bytes = unsafe { std::slice::from_raw_parts(n.text, n.text_len) };
+                String::from_utf8_lossy(bytes).into_owned()
+            } else {
+                String::new()
+            };
+            let char_lengths = copy_bytes(n.char_lengths, n.char_lengths_len);
+            let word_starts = copy_bytes(n.word_starts, n.word_starts_len);
+            let char_positions = copy_floats(n.char_positions, n.char_positions_len);
+            let char_widths = copy_floats(n.char_widths, n.char_widths_len);
             owned.push(Owned {
                 id: n.id,
                 parent: n.parent,
@@ -292,6 +405,13 @@ mod macos {
                 h: n.h,
                 name,
                 value,
+                text,
+                char_lengths,
+                word_starts,
+                char_positions,
+                char_widths,
+                sel_a: n.sel_a,
+                sel_b: n.sel_b,
             });
         }
         let snapshot = Snapshot {
@@ -330,6 +450,172 @@ mod macos {
     pub unsafe extern "C" fn myod_a11y_destroy(a: *mut A11y) {
         if !a.is_null() {
             drop(unsafe { Box::from_raw(a) });
+        }
+    }
+
+    // ---- Tests ----
+    //
+    // Read back the tree the way a screen reader does: through AccessKit's consumer, which is what
+    // the macOS adapter answers AXNumberOfCharacters, AXStringForRange, AXSelectedTextRange and the
+    // word and line navigation with.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use accesskit::Point;
+        use accesskit_consumer::{NodeRef, Tree};
+
+        /// One widget with a text run and no parent, as Odin publishes a paragraph or a field. Each
+        /// character is `step` pixels wide, starting at the run's left edge.
+        #[allow(clippy::too_many_arguments)]
+        fn node(
+            id: u64,
+            role: u32,
+            value: &str,
+            text: &str,
+            lengths: &[u8],
+            words: &[u8],
+            step: f32,
+            sel: (i32, i32),
+        ) -> Owned {
+            Owned {
+                id,
+                parent: -1,
+                role,
+                flags: 0,
+                actions: 0,
+                row_count: -1,
+                row_index: -1,
+                column_count: -1,
+                column_index: -1,
+                x: 100.0,
+                y: 200.0,
+                w: 300.0,
+                h: 20.0,
+                name: String::new(),
+                value: value.into(),
+                text: text.into(),
+                char_lengths: lengths.to_vec(),
+                word_starts: words.to_vec(),
+                char_positions: (0..lengths.len()).map(|i| i as f32 * step).collect(),
+                char_widths: vec![step; lengths.len()],
+                sel_a: sel.0,
+                sel_b: sel.1,
+            }
+        }
+
+        fn tree(nodes: Vec<Owned>) -> Tree {
+            Tree::new(
+                build(Snapshot {
+                    nodes,
+                    focus: 0,
+                    width: 800.0,
+                    height: 600.0,
+                }),
+                true,
+            )
+        }
+
+        fn at<'a>(tree: &'a Tree, id: u64) -> NodeRef<'a> {
+            tree.state()
+                .node_by_tree_local_id(NodeId(id), TreeId::ROOT)
+                .unwrap()
+        }
+
+        #[test]
+        fn a_text_run_is_read_by_character_word_and_line() {
+            let t = tree(vec![node(
+                1,
+                3,
+                "",
+                "Hello world",
+                &[1; 11],
+                &[0, 6],
+                8.0,
+                (-1, -1),
+            )]);
+            let n = at(&t, 1);
+            assert_eq!(n.role(), Role::Label);
+            assert!(n.supports_text_ranges());
+            assert_eq!(n.document_range().text(), "Hello world");
+            assert_eq!(n.document_start().to_global_usv_index(), 0);
+            assert_eq!(n.document_end().to_global_usv_index(), 11);
+            // Both words start where UAX #29 says they do.
+            assert!(n
+                .text_position_from_global_usv_index(0)
+                .unwrap()
+                .is_word_start());
+            assert!(!n
+                .text_position_from_global_usv_index(3)
+                .unwrap()
+                .is_word_start());
+            assert!(n
+                .text_position_from_global_usv_index(6)
+                .unwrap()
+                .is_word_start());
+            // One line, read whole.
+            assert_eq!(n.line_range_from_index(0).unwrap().text(), "Hello world");
+            assert!(n.line_range_from_index(1).is_none());
+            // A point 9 px into the run is inside the second character; that needs the run's
+            // direction to be known.
+            let run = n.children().find(|c| c.role() == Role::TextRun).unwrap();
+            assert_eq!(run.text_direction(), Some(TextDirection::LeftToRight));
+            let pos = n.text_position_at_point(Point::new(109.0, 205.0));
+            assert_eq!(pos.to_global_usv_index(), 1);
+        }
+
+        #[test]
+        fn a_selection_is_read_back_in_characters() {
+            let t = tree(vec![node(
+                7,
+                3,
+                "",
+                "Hello world",
+                &[1; 11],
+                &[0, 6],
+                8.0,
+                (0, 5),
+            )]);
+            let n = at(&t, 7);
+            let sel = n.text_selection().unwrap();
+            assert_eq!(sel.text(), "Hello");
+            assert_eq!(sel.start().to_global_usv_index(), 0);
+            assert_eq!(sel.end().to_global_usv_index(), 5);
+        }
+
+        #[test]
+        fn a_caret_is_exposed_as_a_degenerate_selection() {
+            let value = "bad@example.com";
+            let t = tree(vec![node(9, 5, value, value, &[1; 15], &[0], 8.0, (3, 3))]);
+            let n = at(&t, 9);
+            assert!(n.is_text_input());
+            assert!(n.supports_text_ranges());
+            let sel = n.text_selection().unwrap();
+            assert!(sel.is_degenerate());
+            assert_eq!(sel.text(), "");
+            assert_eq!(sel.start().to_global_usv_index(), 3);
+        }
+
+        #[test]
+        fn multibyte_text_counts_characters_not_bytes() {
+            let s = "中文段落测试";
+            let t = tree(vec![node(11, 3, "", s, &[3; 6], &[0], 12.0, (-1, -1))]);
+            let n = at(&t, 11);
+            assert_eq!(n.document_end().to_global_usv_index(), 6);
+            assert_eq!(n.document_range().text(), s);
+            assert!(n.text_position_from_global_usv_index(5).is_some());
+            // A selection that ends after two characters, given in bytes, reads back as two
+            // characters.
+            let t2 = tree(vec![node(12, 3, "", s, &[3; 6], &[0], 12.0, (0, 6))]);
+            let n2 = at(&t2, 12);
+            assert_eq!(n2.text_selection().unwrap().text(), "中文");
+        }
+
+        #[test]
+        fn a_widget_without_a_run_has_no_text_ranges() {
+            let mut n = node(13, 3, "", "plain", &[], &[], 8.0, (-1, -1));
+            n.text = String::new();
+            let t = tree(vec![n]);
+            assert!(!at(&t, 13).supports_text_ranges());
         }
     }
 }

@@ -350,6 +350,24 @@ measure :: proc(ctx: ^Context, s: string, style: Style, scale: f32) -> [2]f32 {
 	return {sh.width / scale, style.line_height}
 }
 
+// The x of every byte offset of `s` in logical pixels from the line's start: where the caret goes
+// with that many bytes before it. Offsets inside a cluster (a grapheme, a ligature) map to the start
+// of the next cluster.
+caret_positions :: proc(
+	ctx: ^Context,
+	s: string,
+	style: Style,
+	scale: f32,
+	allocator := context.temp_allocator,
+) -> []f32 {
+	sh := shape(ctx, s, style, scale)
+	x_at := cluster_positions(sh, len(s), allocator)
+	for &x in x_at {
+		x /= scale
+	}
+	return x_at
+}
+
 // Draws a single line of text. `pos` is the top-left of the line box in logical pixels; the font's
 // ascent + descent is centered vertically in the line box.
 draw :: proc(list: ^render.Command_List, ctx: ^Context, s: string, pos: [2]f32, style: Style, scale: f32) {
@@ -424,6 +442,79 @@ draw_wrapped :: proc(list: ^render.Command_List, ctx: ^Context, s: string, pos: 
 	for l, i in wrap(ctx, s, style, max_width, scale) {
 		draw_glyphs(list, ctx, sh, l.start, l.end, l.x0, l.width, {pos.x, pos.y + f32(i) * style.line_height}, style, scale)
 	}
+}
+
+// Draws a single line with the bytes [sel_start, sel_end) inverted: a rectangle in `sel_bg` behind
+// them and the glyphs in `sel_fg` (a text selection; DESIGN.md, "Text selection").
+draw_selected :: proc(
+	list: ^render.Command_List,
+	ctx: ^Context,
+	s: string,
+	pos: [2]f32,
+	style: Style,
+	scale: f32,
+	sel_start, sel_end: int,
+	sel_bg, sel_fg: theme.Color,
+) {
+	sh := shape(ctx, s, style, scale)
+	x_at := cluster_positions(sh, len(s), context.temp_allocator)
+	draw_line_selected(list, ctx, sh, 0, len(s), 0, pos, style, scale, x_at, sel_start, sel_end, sel_bg, sel_fg)
+}
+
+// `draw_wrapped` with a selected byte range of the source, inverted the same way.
+draw_wrapped_selected :: proc(
+	list: ^render.Command_List,
+	ctx: ^Context,
+	s: string,
+	pos: [2]f32,
+	style: Style,
+	max_width: f32,
+	scale: f32,
+	sel_start, sel_end: int,
+	sel_bg, sel_fg: theme.Color,
+) {
+	sh := shape(ctx, s, style, scale)
+	x_at := cluster_positions(sh, len(s), context.temp_allocator)
+	for l, i in wrap(ctx, s, style, max_width, scale) {
+		line_pos := [2]f32{pos.x, pos.y + f32(i) * style.line_height}
+		draw_line_selected(list, ctx, sh, l.start, l.end, l.x0, line_pos, style, scale, x_at, sel_start, sel_end, sel_bg, sel_fg)
+	}
+}
+
+// One line of `sh`, [start, end), from x0; the part inside [sel_start, sel_end) is inverted.
+@(private)
+draw_line_selected :: proc(
+	list: ^render.Command_List,
+	ctx: ^Context,
+	sh: Shaped,
+	start, end: int,
+	x0: f32,
+	pos: [2]f32,
+	style: Style,
+	scale: f32,
+	x_at: []f32,
+	sel_start, sel_end: int,
+	sel_bg, sel_fg: theme.Color,
+) {
+	a := clamp(sel_start, start, end)
+	b := clamp(sel_end, start, end)
+	if a >= b {
+		draw_glyphs(list, ctx, sh, start, end, x0, x_at[end] - x_at[start], pos, style, scale)
+		return
+	}
+	// The rectangle first, then the glyphs: the inverted text sits on top of it.
+	render.fill(list, {
+		pos.x + (x_at[a] - x0) / scale,
+		pos.y,
+		(x_at[b] - x_at[a]) / scale,
+		style.line_height,
+	}, sel_bg)
+	// Widths stay 0: the underline of a split line is not drawn (selection never underlines text).
+	draw_glyphs(list, ctx, sh, start, a, x0, 0, pos, style, scale)
+	marked := style
+	marked.color = sel_fg
+	draw_glyphs(list, ctx, sh, a, b, x0, 0, pos, marked, scale)
+	draw_glyphs(list, ctx, sh, b, end, x0, 0, pos, style, scale)
 }
 
 // Emits the glyphs of `sh` whose clusters fall in [start, end), shifted left by `x0`; `width` is the
@@ -572,6 +663,157 @@ is_cjk :: proc(r: rune) -> bool {
 		return true
 	}
 	return false
+}
+
+// ---- Word boundaries (selection and word-wise movement) ----
+
+@(private)
+is_word_rune :: proc(r: rune) -> bool {
+	return unicode.is_letter(r) || unicode.is_digit(r) || r == '_'
+}
+
+@(private)
+rune_at :: proc(s: string, i: int) -> rune {
+	if i < 0 || i >= len(s) {
+		return 0
+	}
+	r, _ := utf8.decode_rune_in_string(s[i:])
+	return r
+}
+
+@(private)
+rune_before :: proc(s: string, i: int) -> int {
+	j := clamp(i, 0, len(s))
+	if j == 0 {
+		return 0
+	}
+	j -= 1
+	for j > 0 && (s[j] & 0xc0) == 0x80 {
+		j -= 1
+	}
+	return j
+}
+
+@(private)
+rune_after :: proc(s: string, i: int) -> int {
+	j := clamp(i, 0, len(s))
+	if j >= len(s) {
+		return len(s)
+	}
+	_, size := utf8.decode_rune_in_string(s[j:])
+	return j + max(size, 1)
+}
+
+// The start of the word before `i`. Words are runs of letters, digits and underscores; each CJK
+// character is its own word; runs of other characters are words too.
+prev_word :: proc(s: string, i: int) -> int {
+	j := clamp(i, 0, len(s))
+	for j > 0 {
+		p := rune_before(s, j)
+		r := rune_at(s, p)
+		if is_word_rune(r) || is_cjk(r) {
+			break
+		}
+		j = p
+	}
+	if j == 0 {
+		return 0
+	}
+	p := rune_before(s, j)
+	r := rune_at(s, p)
+	if is_cjk(r) {
+		return p
+	}
+	j = p
+	for j > 0 {
+		q := rune_before(s, j)
+		rq := rune_at(s, q)
+		if !is_word_rune(rq) || is_cjk(rq) {
+			break
+		}
+		j = q
+	}
+	return j
+}
+
+// The end of the word after `i`.
+next_word :: proc(s: string, i: int) -> int {
+	j := clamp(i, 0, len(s))
+	for j < len(s) {
+		r := rune_at(s, j)
+		if is_word_rune(r) || is_cjk(r) {
+			break
+		}
+		j = rune_after(s, j)
+	}
+	if j >= len(s) {
+		return len(s)
+	}
+	if is_cjk(rune_at(s, j)) {
+		return rune_after(s, j)
+	}
+	for j < len(s) {
+		r := rune_at(s, j)
+		if !is_word_rune(r) || is_cjk(r) {
+			break
+		}
+		j = rune_after(s, j)
+	}
+	return j
+}
+
+// The word around `at` (a double click): a word, a CJK character, or the run of spaces or of like
+// punctuation `at` is in.
+word_at :: proc(s: string, at: int) -> (a, b: int) {
+	if len(s) == 0 {
+		return 0, 0
+	}
+	i := clamp(at, 0, len(s))
+	if i == len(s) {
+		i = rune_before(s, i)
+	}
+	r := rune_at(s, i)
+	if is_cjk(r) {
+		return i, rune_after(s, i)
+	}
+	if is_word_rune(r) {
+		a = i
+		for a > 0 {
+			p := rune_before(s, a)
+			rp := rune_at(s, p)
+			if !is_word_rune(rp) || is_cjk(rp) {
+				break
+			}
+			a = p
+		}
+		b = rune_after(s, i)
+		for b < len(s) {
+			rb := rune_at(s, b)
+			if !is_word_rune(rb) || is_cjk(rb) {
+				break
+			}
+			b = rune_after(s, b)
+		}
+		return
+	}
+	a, b = i, rune_after(s, i)
+	space := unicode.is_space(r)
+	for a > 0 {
+		p := rune_before(s, a)
+		rp := rune_at(s, p)
+		if is_word_rune(rp) || is_cjk(rp) || unicode.is_space(rp) != space {
+			break
+		}
+		a = p
+	}
+	for b < len(s) {
+		rb := rune_at(s, b)
+		if is_word_rune(rb) || is_cjk(rb) || unicode.is_space(rb) != space {
+			break
+		}
+		b = rune_after(s, b)
+	}
+	return
 }
 
 // Fills in each glyph's advance and swaps characters the sprite package draws for sprite glyphs.

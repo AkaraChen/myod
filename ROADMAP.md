@@ -299,18 +299,18 @@ Implemented per DESIGN.md, “Component specs”; all states change color only. 
 
 ### M7: Text input
 
-- [ ] Input field look: label above, no placeholder; focused, error, and disabled states
-- [ ] Controlled: the value comes from `State`, and every edit returns the new text; the cursor, selection, and input method preedit text are kept by the library per widget ID. When the application changes the value (e.g., clears it), the cursor position must converge correctly
-- [ ] Single-line input: cursor (steady, no blinking), selection (inverted colors), word-wise movement (Option / Ctrl + arrow keys), Home / End
-- [ ] Clipboard: copy, cut, paste (SDL3 clipboard API)
-- [ ] Undo / redo
-- [ ] **Input methods**:
-  - [ ] `SDL_StartTextInput` / `SDL_StopTextInput` toggled with focus
-  - [ ] Handle `SDL_EVENT_TEXT_EDITING` and show the preedit text (underlined)
-  - [ ] `SDL_SetTextInputArea`, so the candidate window follows the cursor
-- [ ] Multi-line input (a simple implementation first; large-document performance can be optimized later)
-- [ ] **Text selection** (per ARCHITECTURE.md, “API design → 16”): drag-select across widgets in document order, double-click to select a word, triple-click to select a paragraph, copy; interactive widgets and text with `interactive = true` are not selectable
-- [ ] **Text accessibility**: screen readers read body text and text fields by character, word, and line, and get the cursor and selection positions
+- [x] Input field look: label above, no placeholder; focused, error, and disabled states
+- [x] Controlled: the value comes from `State`, and every edit returns the new text; the cursor, selection, and input method preedit text are kept by the library per widget ID. When the application changes the value (e.g., clears it), the cursor position must converge correctly
+- [x] Single-line input: cursor (steady, no blinking), selection (inverted colors), word-wise movement (Option / Ctrl + arrow keys), Home / End
+- [x] Clipboard: copy, cut, paste (SDL3 clipboard API)
+- [x] Undo / redo
+- [x] **Input methods**:
+  - [x] `SDL_StartTextInput` / `SDL_StopTextInput` toggled with focus
+  - [x] Handle `SDL_EVENT_TEXT_EDITING` and show the preedit text (underlined)
+  - [x] `SDL_SetTextInputArea`, so the candidate window follows the cursor
+- [x] Multi-line input (a simple implementation first; large-document performance can be optimized later)
+- [x] **Text selection** (per ARCHITECTURE.md, “API design → 16”): drag-select across widgets in document order, double-click to select a word, triple-click to select a paragraph, copy; interactive widgets and text with `interactive = true` are not selectable
+- [x] **Text accessibility**: screen readers read body text and text fields by character, word, and line, and get the cursor and selection positions
 
 **Acceptance:**
 - `examples/07_input`: type Chinese with the system Pinyin input method; the candidate window is positioned correctly; select, copy, and paste work; the error state shows an error message; VoiceOver and Orca read the input field and body text character by character

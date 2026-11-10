@@ -67,6 +67,10 @@ Paint_Text :: struct {
 	style: text.Style, // its color is ignored: `color` is resolved at draw time
 	color: Token,
 	wrap:  bool,
+	// A byte range of `s` drawn inverted, fg background with bg-solid text: a text selection. Empty
+	// (the zero value) selects nothing.
+	sel_start: int,
+	sel_end:   int,
 }
 
 // A hairline along the node (dividers). Its thickness comes from `thickness` (logical pixels), not
@@ -120,6 +124,7 @@ Node_Flag :: enum u8 {
 	Menu, // a layer whose items arrows move through
 	Sticky, // stays at the top of the nearest scrolling ancestor (positioning phase)
 	Adjust, // the widget uses the arrow keys itself (a slider, a splitter)
+	Text_Edit, // a text field: the platform's text input is on while it has focus
 }
 Node_Flags :: bit_set[Node_Flag;u16]
 
@@ -140,6 +145,16 @@ Node :: struct {
 	role:         Role,
 	name:         string,
 	a11y_value:   string,
+	// The text run a text field exposes to screen readers (`set_a11y_text`): the text, where the
+	// caret and selection anchor are in it, and how it is laid out.
+	a11y_run:        bool,
+	a11y_text:       string,
+	a11y_caret:      int,
+	a11y_anchor:     int,
+	a11y_style:      text.Style,
+	a11y_wrap_width: f32, // logical pixels; 0 for a single line
+	a11y_scroll:     f32, // horizontal scroll of a single-line field, logical pixels
+	a11y_inset_x:    f32, // where the text starts inside the node, logical pixels
 }
 
 Slot :: struct {
@@ -246,6 +261,8 @@ Context :: struct {
 	frame_start: time.Tick,
 	pass_start:  time.Tick,
 	input:       Input,
+	// The window's text selection over body content (selection.odin).
+	sel: Text_Selection,
 }
 
 @(private)
@@ -622,6 +639,26 @@ last_rect :: proc(ctx: ^Context, id: Id) -> (Rect, bool) {
 		return {}, false
 	}
 	return ctx.slots[slot].rect, true
+}
+
+// The flags of the node with this ID in whichever of the two trees has it laid out (whether it takes
+// text input, say).
+flags_of :: proc(ctx: ^Context, id: Id) -> (Node_Flags, bool) {
+	slot, ok := ctx.slot_of[id]
+	if !ok {
+		return {}, false
+	}
+	n := ctx.slots[slot].index
+	if n < 0 {
+		return {}, false
+	}
+	for k in 0 ..< 2 {
+		t := &ctx.trees[k]
+		if int(n) < len(t.nodes) && t.nodes[n].slot == slot {
+			return t.nodes[n].flags, true
+		}
+	}
+	return {}, false
 }
 
 // The library's state for a widget ID, created zeroed on first use (`created` is true then) and
@@ -1215,7 +1252,15 @@ draw_range :: proc(
 		}
 		r := Rect{node.rect.x - scroll.x, node.rect.y - scroll.y, node.rect.w, node.rect.h}
 		if visible {
-			solid = paint(ctx, list, node.paint, r, solid, a)
+			p := node.paint
+			if pt, is_text := p.(Paint_Text); is_text {
+				// The window's selection inverts its part of this text (selection.odin).
+				if sa, sb, sel_ok := selection_text_range(ctx, int(i), pt.s); sel_ok {
+					pt.sel_start, pt.sel_end = sa, sb
+					p = pt
+				}
+			}
+			solid = paint(ctx, list, p, r, solid, a)
 			if node.id == ctx.input.focus && ctx.input.focus_visible {
 				// The focus ring: 2px of fg, 1px outside the widget (DESIGN.md, "Focus ring").
 				ring := Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6}
@@ -1255,7 +1300,16 @@ paint :: proc(ctx: ^Context, list: ^render.Command_List, p: Paint, r: Rect, on_s
 	case Paint_Text:
 		style := v.style
 		style.color = fade(color(ctx, v.color, on_solid), a)
-		if v.wrap {
+		selected := v.sel_end > v.sel_start
+		if selected {
+			sel_bg := fade(color(ctx, .Fg, on_solid), a)
+			sel_fg := fade(color(ctx, .Bg_Solid, on_solid), a)
+			if v.wrap {
+				text.draw_wrapped_selected(list, ctx.text, v.s, {r.x, r.y}, style, r.w + 0.5 / ctx.scale, ctx.scale, v.sel_start, v.sel_end, sel_bg, sel_fg)
+			} else {
+				text.draw_selected(list, ctx.text, v.s, {r.x, r.y}, style, ctx.scale, v.sel_start, v.sel_end, sel_bg, sel_fg)
+			}
+		} else if v.wrap {
 			text.draw_wrapped(list, ctx.text, v.s, {r.x, r.y}, style, r.w + 0.5 / ctx.scale, ctx.scale)
 		} else {
 			text.draw(list, ctx.text, v.s, {r.x, r.y}, style, ctx.scale)
